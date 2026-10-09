@@ -17,6 +17,7 @@ import { JwtAuthGuard } from "./auth/guards/jwt-auth.guard";
 import { BlockchainsModule } from "./blockchains/blockchains.module";
 import { BookingModule } from "./booking/booking.module";
 import { BridgeModule } from "./bridge/bridge.module";
+import { OnrampModule } from "./onramp/onramp.module";
 import { DappsModule } from "./dapps/dapps.module";
 import { SwapModule } from "./swap/swap.module";
 import { ExchangeRateModule } from "./exchange-rate/exchange-rate.module";
@@ -95,6 +96,7 @@ import { X402Module } from "./x402/x402.module";
     StrategiesModule,
     PortfolioModule,
     BridgeModule,
+    OnrampModule,
     SwapModule,
     PushModule,
     WalletConnectPushModule,

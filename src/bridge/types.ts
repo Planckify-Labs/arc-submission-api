@@ -190,6 +190,14 @@ export interface BridgeQuoteRequest {
    * does not expose it.
    */
   slippageBps?: number;
+  /**
+   * The minimum the user approved (the card's `toAmountMinRaw`), sent by
+   * the device's execute-time re-quote. Lets the server keep that floor
+   * when the market ticks between quote and signing: it may only TIGHTEN
+   * slippage so the fresh route's on-chain minimum still meets it, never
+   * loosen it. Not a slippage input, so §8.4 holds.
+   */
+  minReceiveRaw?: string;
   transferSpeedHint?: "fast" | "standard";
   useForwarder?: boolean;
 }
@@ -405,6 +413,36 @@ export interface BridgeSupportedChain {
   providers: string[];
   logoUri?: string;
   nativeSymbol?: string;
+}
+
+/** One validated bridge pair: the same asset on both sides. */
+export interface BridgeRoutePair {
+  from: BridgeToken;
+  to: BridgeToken;
+  /** Adapters that route it, in preference order. */
+  providers: string[];
+}
+
+/** `GET /bridge/route-tokens`: what a picker may offer for one route. */
+export interface BridgeRouteTokens {
+  from: Caip2;
+  to: Caip2;
+  /** Bridge (`from` ≠ `to`): exact pairs. Empty for a swap. */
+  pairs: BridgeRoutePair[];
+  /** Swap (`from` = `to`): tradable tokens. Empty for a bridge. */
+  tokens: BridgeToken[];
+  /** A provider could not be checked; its tokens are left out. */
+  degraded: boolean;
+}
+
+/** What a wallet on one chain can reach (`GET /bridge/reach`). */
+export interface BridgeReach {
+  chain: Caip2;
+  /** A provider swaps on this chain. */
+  swap: boolean;
+  /** Enabled chains a provider bridges to from this one. */
+  destinations: BridgeSupportedChain[];
+  degraded: boolean;
 }
 
 export interface BridgeSupport {

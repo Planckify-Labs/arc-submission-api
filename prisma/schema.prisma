@@ -1648,3 +1648,47 @@ model VoucherShape {
   @@unique([productCode, signature])
   @@index([parseTier, lastSeenAt(sort: Desc)])
 }
+
+/// One fiat-to-stablecoin purchase started through the embedded onramp
+/// widget (mobile-app docs/onramp-app-kit-spec.md §5.4).
+///
+/// Created PENDING when a session is minted, so a webhook that arrives for
+/// an order we never saw is still matchable by `sessionId`. The row is a
+/// ledger, never the balance source: the chain is the truth for "funds
+/// arrived" and the app refetches it on return from the widget.
+///
+/// Table creation only. `prisma db push` on prod never runs migration
+/// data, so any backfill must self-heal in code.
+model OnrampOrder {
+  id            String            @id @default(ulid())
+  userId        String
+  // Canonical per-chain form (canonicalizeWalletAddress).
+  walletAddress String
+  // CAIP-2 of the receiving chain, e.g. "eip155:5042002".
+  chainKey      String
+  env           String
+  sessionId     String            @unique
+  status        OnrampOrderStatus @default(PENDING)
+  // Provider order id, learned from the webhook.
+  orderId       String?           @unique
+  txHash        String?
+  // Decimal string as the provider reports it; never used for balances.
+  amount        String?
+  token         String?
+  // Coarse provider code on FAILED (e.g. CUSTOMER_REJECTED). Our own
+  // vocabulary only, never a raw provider message.
+  failureCode   String?
+  createdAt     DateTime          @default(now()) @db.Timestamptz()
+  updatedAt     DateTime          @updatedAt @db.Timestamptz()
+  settledAt     DateTime?         @db.Timestamptz()
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([walletAddress, status])
+}
+
+enum OnrampOrderStatus {
+  PENDING
+  SUBMITTED
+  SETTLED
+  FAILED
+}

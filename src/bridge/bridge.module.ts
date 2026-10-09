@@ -11,6 +11,7 @@
 
 import { Module, type OnModuleInit } from "@nestjs/common";
 import { AlchemyPricesClient } from "../strategies/external/alchemy-prices.client";
+import { TokensModule } from "../tokens/tokens.module";
 import { ValkeyModule } from "../valkey/valkey.module";
 import { BridgeController } from "./bridge.controller";
 import { BridgeService } from "./bridge.service";
@@ -24,7 +25,8 @@ import { registerBridgeAdapter } from "./registry";
 
 @Module({
   // Valkey backs the shared Alchemy price cache and daily budget.
-  imports: [ValkeyModule],
+  // Tokens provides the Alchemy token-metadata client for picker icons.
+  imports: [ValkeyModule, TokensModule],
   controllers: [BridgeController],
   providers: [
     BridgeService,

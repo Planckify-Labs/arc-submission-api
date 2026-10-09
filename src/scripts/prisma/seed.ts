@@ -2715,6 +2715,85 @@ async function main() {
         peggedCurrency: null,
       },
     }),
+    // EURC and cirBTC on Arc TESTNET: the same vouch the mainnet rows give,
+    // so the Add funds picker and the agent offer them there too (LI.FI
+    // lists only USDC/EURC on 5042002 and does not know cirBTC at all).
+    // Addresses are Circle's own pins (App Kit's chain defs for EURC, its
+    // built-in token registry for cirBTC), verified on-chain 2026-10-09:
+    // EURC "EURC" 6 dec; cirBTC "Circle Wrapped Bitcoin" 8 dec. Tower quotes
+    // USDC -> cirBTC on 5042002 (live-checked the same day).
+    prisma.token.upsert({
+      where: {
+        blockchainId_contractAddress: {
+          blockchainId: evmChain(5042002).id, // Arc Testnet
+          contractAddress: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+        },
+      },
+      update: {
+        name: "EURC",
+        symbol: "EURC",
+        decimals: 6,
+        logoUrl:
+          "https://static.alchemyapi.io/images/assets/20641.png",
+        isStablecoin: true,
+        isNativeCurrency: false,
+        // Swappable and vouched-for, NOT cleared for payment flows.
+        isPaymentEnabled: false,
+        isActive: true,
+        peggedCurrency: "EUR",
+      },
+      create: {
+        blockchainId: evmChain(5042002).id, // Arc Testnet
+        contractAddress: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+        name: "EURC",
+        symbol: "EURC",
+        decimals: 6,
+        logoUrl:
+          "https://static.alchemyapi.io/images/assets/20641.png",
+        isStablecoin: true,
+        isNativeCurrency: false,
+        // Swappable and vouched-for, NOT cleared for payment flows.
+        isPaymentEnabled: false,
+        isActive: true,
+        peggedCurrency: "EUR",
+      },
+    }),
+    prisma.token.upsert({
+      where: {
+        blockchainId_contractAddress: {
+          blockchainId: evmChain(5042002).id, // Arc Testnet
+          contractAddress: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
+        },
+      },
+      update: {
+        name: "Circle Wrapped Bitcoin",
+        symbol: "cirBTC",
+        decimals: 8,
+        logoUrl:
+          "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/bitcoin/info/logo.png",
+        isStablecoin: false,
+        isNativeCurrency: false,
+        // Swappable and vouched-for, NOT cleared for payment flows.
+        isPaymentEnabled: false,
+        isActive: true,
+        peggedCurrency: null,
+      },
+      create: {
+        blockchainId: evmChain(5042002).id, // Arc Testnet
+        contractAddress: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
+        name: "Circle Wrapped Bitcoin",
+        symbol: "cirBTC",
+        decimals: 8,
+        logoUrl:
+          "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/bitcoin/info/logo.png",
+        isStablecoin: false,
+        isNativeCurrency: false,
+        // Swappable and vouched-for, NOT cleared for payment flows.
+        isPaymentEnabled: false,
+        isActive: true,
+        peggedCurrency: null,
+      },
+    }),
   ]);
 
   // Native USDC on Arc — the second view of the SAME balance the ERC-20 row

@@ -25,10 +25,20 @@ import { BridgeService, type BridgeQuoteResult } from "./bridge.service";
 import {
   BridgeGasTopUpDto,
   BridgeQuoteDto,
+  BridgeReachQueryDto,
+  BridgeRouteTokensQueryDto,
   BridgeStatusQueryDto,
+  BridgeTokenListQueryDto,
   BridgeTokenSearchQueryDto,
 } from "./dto/bridge.dto";
-import type { BridgeQuote, BridgeStatus, BridgeSupport } from "./types";
+import type {
+  BridgeQuote,
+  BridgeReach,
+  BridgeRouteTokens,
+  BridgeStatus,
+  BridgeSupport,
+  BridgeToken,
+} from "./types";
 
 @ApiTags("bridge")
 @Controller("bridge")
@@ -65,11 +75,42 @@ export class BridgeController {
       amountRaw: dto.amountRaw,
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
+      // A floor, not a slippage: it can only make the route stricter.
+      minReceiveRaw: dto.minReceiveRaw,
       // Slippage is deliberately absent from the DTO: it is a fixed
       // server-side default per route class, disclosed on the card but
       // NOT user-adjustable and NOT model-supplied (§8.4). A
       // safety-critical number must not be under LLM control.
     });
+  }
+
+  @Get("reach")
+  @ApiOperation({
+    summary:
+      "From one chain: can a provider swap there, and which enabled chains can it bridge to. Drives the bridge destination picker.",
+  })
+  getReach(@Query() query: BridgeReachQueryDto): Promise<BridgeReach> {
+    return this.bridgeService.reach(query.from);
+  }
+
+  @Get("route-tokens")
+  @ApiOperation({
+    summary:
+      "Validated tokens for one route: same-asset pairs for a bridge, tradable tokens for a swap. Only what a provider actually routes.",
+  })
+  getRouteTokens(
+    @Query() query: BridgeRouteTokensQueryDto,
+  ): Promise<BridgeRouteTokens> {
+    return this.bridgeService.routeTokens(query.from, query.to);
+  }
+
+  @Get("tokens")
+  @ApiOperation({
+    summary:
+      "The route providers' token list for a chain, vouched tokens first. The device merges its own catalogue rows.",
+  })
+  listTokens(@Query() query: BridgeTokenListQueryDto): Promise<BridgeToken[]> {
+    return this.bridgeService.listTokens(query.chain);
   }
 
   @Get("tokens/search")

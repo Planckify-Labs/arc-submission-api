@@ -105,6 +105,31 @@ export interface RouteAdapter {
    */
   searchTokens?(chain: Caip2, query: string): Promise<BridgeToken[]>;
 
+  /**
+   * The provider's token list for one chain, for a picker. Optional and
+   * presence-checked like `searchTokens`; identity trust is applied by the
+   * caller. An adapter with no enumerable list (on-chain reads only) omits
+   * it and still serves exact lookups through `resolveToken`.
+   */
+  listTokens?(chain: Caip2): Promise<BridgeToken[]>;
+
+  /**
+   * The exact token pairs this provider can bridge from `from` to `to`
+   * (same asset on both sides), for a validated picker. Optional and
+   * presence-checked. An adapter that answers it must only list pairs it
+   * would actually quote; the quote stays the final word on amounts.
+   */
+  listRoutablePairs?(
+    from: Caip2,
+    to: Caip2,
+  ): Promise<Array<{ from: BridgeToken; to: BridgeToken }>>;
+
+  /**
+   * Tokens this provider can trade on `chain` (same-chain swaps), for a
+   * validated picker. Optional and presence-checked.
+   */
+  listSwapTokens?(chain: Caip2): Promise<BridgeToken[]>;
+
 }
 
 export type BridgeRouteAdapter = RouteAdapter;
