@@ -1,10 +1,10 @@
 services:
   postgres:
     image: timescale/timescaledb-ha:pg18
-    container_name: takumipay-postgres
+    container_name: ${COMPOSE_PREFIX:-takumipay}-postgres
     restart: unless-stopped
     ports:
-      - "0.0.0.0:5432:5432"
+      - "${POSTGRES_BIND:-0.0.0.0}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-takumipay}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

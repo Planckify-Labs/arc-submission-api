@@ -1,10 +1,10 @@
 services:
   valkey:
     image: valkey/valkey:9-alpine
-    container_name: takumipay-valkey
+    container_name: ${COMPOSE_PREFIX:-takumipay}-valkey
     restart: unless-stopped
     ports:
-      - "0.0.0.0:6379:6379"
+      - "${VALKEY_BIND:-0.0.0.0}:${VALKEY_HOST_PORT:-6379}:6379"
     command: valkey-server --requirepass ${VALKEY_PASSWORD}
     environment:
       VALKEY_PASSWORD: ${VALKEY_PASSWORD}

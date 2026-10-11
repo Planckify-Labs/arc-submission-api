@@ -3,10 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: takumipay-api
+    container_name: ${COMPOSE_PREFIX:-takumipay}-api
     restart: unless-stopped
     ports:
-      - "0.0.0.0:4000:4000"
+      - "${API_BIND:-0.0.0.0}:${API_HOST_PORT:-4000}:4000"
     environment:
       NODE_ENV: production
       PORT: 4000
