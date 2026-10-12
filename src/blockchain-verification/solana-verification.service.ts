@@ -30,6 +30,10 @@ interface SolanaClient {
   program: any;
 }
 
+/** How long one verification attempt waits for a signature to confirm. */
+const CONFIRMATION_POLL_WINDOW_MS = 45_000;
+const CONFIRMATION_POLL_INTERVAL_MS = 2_000;
+
 @Injectable()
 export class SolanaVerificationService implements OnModuleInit {
   private readonly logger = new Logger(SolanaVerificationService.name);
@@ -110,21 +114,55 @@ export class SolanaVerificationService implements OnModuleInit {
     return client;
   }
 
+  /**
+   * Polls `getSignatureStatuses` until `signature` reaches `commitment`.
+   *
+   * Not `confirmTransaction`: it waits on a WebSocket signature subscription,
+   * which rpc-proxy does not carry, and it was handed a fresh blockhash
+   * rather than the transaction's own. Together that reported finalized
+   * payments as "block height exceeded" on every retry, so they never
+   * settled.
+   *
+   * A failed transaction throws a "reverted or failed" message, which
+   * `classifySettlementError` treats as a chain verdict. Anything still
+   * unconfirmed after the window throws a plain error, which is transient:
+   * the settlement queue retries with its own backoff.
+   */
   async waitForConfirmation(
     blockchainId: string,
     signature: string,
     commitment: Commitment = "finalized",
   ): Promise<void> {
     const { connection } = this.getClient(blockchainId);
-    const bh = await connection.getLatestBlockhash(commitment);
-    await connection.confirmTransaction(
-      {
-        signature,
-        blockhash: bh.blockhash,
-        lastValidBlockHeight: bh.lastValidBlockHeight,
-      },
-      commitment,
-    );
+    const wanted =
+      commitment === "finalized"
+        ? ["finalized"]
+        : ["confirmed", "finalized"];
+    const deadline = Date.now() + CONFIRMATION_POLL_WINDOW_MS;
+    for (;;) {
+      const {
+        value: [status],
+      } = await connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: true,
+      });
+      if (status?.err) {
+        throw new Error(
+          `Solana transaction ${signature} reverted or failed: ${JSON.stringify(status.err)}`,
+        );
+      }
+      if (
+        status?.confirmationStatus &&
+        wanted.includes(status.confirmationStatus)
+      ) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Solana transaction ${signature} not ${commitment} yet (status: ${status?.confirmationStatus ?? "not found"})`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, CONFIRMATION_POLL_INTERVAL_MS));
+    }
   }
 
   async verifyTransaction(args: {
