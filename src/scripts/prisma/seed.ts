@@ -1381,14 +1381,14 @@ async function main() {
       update: {
         name: "takumi_pay",
         type: "payment",
-        address: "6CCTEtYrk8unNhjYQ7npiLUf1iKQQJU88JSYn8EJLNYy",
+        address: "Baj91uzqwt8hRaJmke3dV8RdBwjq5MaWEtKNuUFTBBwS",
       },
       create: {
         id: "smart-contract-payment-solana-devnet",
         name: "takumi_pay",
         type: "payment",
         blockchainId: slugChain("solana-devnet").id, // Solana Devnet
-        address: "6CCTEtYrk8unNhjYQ7npiLUf1iKQQJU88JSYn8EJLNYy",
+        address: "Baj91uzqwt8hRaJmke3dV8RdBwjq5MaWEtKNuUFTBBwS",
         isActive: true,
       },
     }),
@@ -2479,12 +2479,12 @@ async function main() {
         isActive: true,
       },
     }),
-    // Mock USDC on Solana Devnet — deployed via devnet-setup.ts for merchant payment testing
+    // Circle USDC on Solana Devnet (faucet.circle.com) — allowlisted on takumi_pay
     prisma.token.upsert({
       where: {
         blockchainId_contractAddress: {
           blockchainId: slugChain("solana-devnet").id,
-          contractAddress: "4qFejVSp46Q4SZCGDrXbkFJC1qw5uo1JBnbXLnKZurey",
+          contractAddress: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         },
       },
       update: {
@@ -2503,7 +2503,7 @@ async function main() {
         symbol: "USDC",
         decimals: 6,
         blockchainId: slugChain("solana-devnet").id, // Solana Devnet
-        contractAddress: "4qFejVSp46Q4SZCGDrXbkFJC1qw5uo1JBnbXLnKZurey",
+        contractAddress: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         logoUrl:
           "https://static.alchemyapi.io/images/assets/3408.png",
         isStablecoin: true,

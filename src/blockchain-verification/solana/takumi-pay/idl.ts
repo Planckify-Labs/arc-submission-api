@@ -1,5 +1,5 @@
 export const TAKUMI_PAY_IDL = {
-  "address": "6CCTEtYrk8unNhjYQ7npiLUf1iKQQJU88JSYn8EJLNYy",
+  "address": "Baj91uzqwt8hRaJmke3dV8RdBwjq5MaWEtKNuUFTBBwS",
   "metadata": {
     "name": "takumi_pay",
     "version": "0.1.0",
@@ -26,22 +26,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         }
       ],
       "args": []
@@ -62,141 +47,116 @@ export const TAKUMI_PAY_IDL = {
         {
           "name": "owner",
           "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "name": "config"
         },
         {
           "name": "admin_pubkey"
         },
         {
           "name": "admin_record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  100,
-                  109,
-                  105,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "admin_pubkey"
-              }
-            ]
-          }
+          "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": []
     },
     {
-      "name": "add_allowed_point_token",
+      "name": "add_allowed_payment_token",
+      "docs": [
+        "Allowlists a token for every value-in entrypoint. Pass `Pubkey::default()`",
+        "to allowlist native SOL."
+      ],
       "discriminator": [
-        46,
+        102,
+        233,
+        26,
+        59,
         188,
-        165,
-        50,
-        78,
-        78,
-        42,
-        232
+        77,
+        132,
+        155
       ],
       "accounts": [
         {
           "name": "owner",
           "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "token_mint"
+          "name": "config"
         },
         {
           "name": "allowed_token",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  108,
-                  108,
-                  111,
-                  119,
-                  101,
-                  100,
-                  95,
-                  112,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ]
-          }
+          "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "apply_sweep_cap",
+      "discriminator": [
+        25,
+        233,
+        160,
+        69,
+        231,
+        78,
+        80,
+        204
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "apply_withdrawal_delay",
+      "discriminator": [
+        52,
+        68,
+        136,
+        10,
+        71,
+        68,
+        65,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
         }
       ],
       "args": []
@@ -216,32 +176,46 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         }
       ],
       "args": []
+    },
+    {
+      "name": "cancel_sweep_cap",
+      "discriminator": [
+        246,
+        238,
+        163,
+        70,
+        124,
+        205,
+        113,
+        195
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "cancel_withdrawal",
@@ -258,63 +232,38 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "withdrawal_request"
-          ]
+          "name": "config"
         },
         {
           "name": "withdrawal_request",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  105,
-                  116,
-                  104,
-                  100,
-                  114,
-                  97,
-                  119,
-                  97,
-                  108
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "withdrawal_request.nonce",
-                "account": "WithdrawalRequest"
-              }
-            ]
-          }
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_withdrawal_delay",
+      "discriminator": [
+        172,
+        255,
+        110,
+        4,
+        206,
+        17,
+        121,
+        128
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
         }
       ],
       "args": []
@@ -339,22 +288,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "tx_record",
@@ -365,12 +299,18 @@ export const TAKUMI_PAY_IDL = {
           "writable": true
         },
         {
+          "name": "allowed_token",
+          "docs": [
+            "Native SOL is keyed by `Pubkey::default()`. Absent PDA == token not",
+            "allowlisted, and the instruction fails to deserialize it."
+          ]
+        },
+        {
           "name": "spending_limit",
           "optional": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -404,22 +344,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "tx_record",
@@ -433,200 +358,33 @@ export const TAKUMI_PAY_IDL = {
           "name": "token_mint"
         },
         {
+          "name": "allowed_token",
+          "docs": [
+            "Absent PDA == token not allowlisted, and the instruction fails to",
+            "deserialize it. Gates create_transaction the same way deposit_points",
+            "has always been gated."
+          ]
+        },
+        {
           "name": "payer_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "payer"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "spending_limit",
           "optional": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         },
         {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+          "name": "associated_token_program"
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -660,58 +418,13 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "allowed_token"
-          ]
+          "writable": true
         },
         {
           "name": "token_mint"
         },
         {
-          "name": "allowed_token",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  108,
-                  108,
-                  111,
-                  119,
-                  101,
-                  100,
-                  95,
-                  112,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ]
-          }
+          "name": "allowed_token"
         },
         {
           "name": "point_deposit",
@@ -719,225 +432,24 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "point_ref_record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  111,
-                  105,
-                  110,
-                  116,
-                  95,
-                  114,
-                  101,
-                  102
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "arg",
-                "path": "ref_id_hash"
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "payer_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "payer"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         },
         {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+          "name": "associated_token_program"
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -975,72 +487,22 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "withdrawal_request"
-          ]
+          "writable": true
         },
         {
           "name": "withdrawal_request",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  105,
-                  116,
-                  104,
-                  100,
-                  114,
-                  97,
-                  119,
-                  97,
-                  108
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "withdrawal_request.nonce",
-                "account": "WithdrawalRequest"
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "recipient",
           "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": []
@@ -1060,164 +522,28 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "withdrawal_request"
-          ]
+          "name": "config"
         },
         {
           "name": "withdrawal_request",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  105,
-                  116,
-                  104,
-                  100,
-                  114,
-                  97,
-                  119,
-                  97,
-                  108
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "withdrawal_request.nonce",
-                "account": "WithdrawalRequest"
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "token_mint"
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "recipient_token_account",
           "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         }
       ],
       "args": []
@@ -1242,26 +568,10 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -1291,22 +601,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "merchant_payment",
@@ -1314,77 +609,20 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "platform_fee_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  108,
-                  97,
-                  116,
-                  102,
-                  111,
-                  114,
-                  109,
-                  95,
-                  102,
-                  101,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
-          "name": "instructions_sysvar",
-          "address": "Sysvar1nstructions1111111111111111111111111"
+          "name": "allowed_token",
+          "docs": [
+            "Native SOL is keyed by `Pubkey::default()`. Absent PDA == token not",
+            "allowlisted, and the instruction fails to deserialize it."
+          ]
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "instructions_sysvar"
+        },
+        {
+          "name": "system_program"
         }
       ],
       "args": [
@@ -1418,22 +656,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "merchant_payment",
@@ -1441,235 +664,38 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "platform_fee_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  108,
-                  97,
-                  116,
-                  102,
-                  111,
-                  114,
-                  109,
-                  95,
-                  102,
-                  101,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "token_mint"
         },
         {
+          "name": "allowed_token",
+          "docs": [
+            "Absent PDA == token not allowlisted, and the instruction fails to",
+            "deserialize it. A backend-signed quote is not on its own sufficient —",
+            "the token must also be on the allowlist."
+          ]
+        },
+        {
           "name": "payer_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "payer"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
-          "name": "instructions_sysvar",
-          "address": "Sysvar1nstructions1111111111111111111111111"
+          "name": "instructions_sysvar"
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         },
         {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+          "name": "associated_token_program"
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -1680,6 +706,46 @@ export const TAKUMI_PAY_IDL = {
               "name": "MerchantQuoteParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "queue_sweep_cap",
+      "discriminator": [
+        41,
+        57,
+        68,
+        248,
+        192,
+        168,
+        142,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "cap",
+          "type": "u64"
         }
       ]
     },
@@ -1699,37 +765,18 @@ export const TAKUMI_PAY_IDL = {
         {
           "name": "owner",
           "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "withdrawal_request",
           "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -1752,6 +799,35 @@ export const TAKUMI_PAY_IDL = {
       ]
     },
     {
+      "name": "queue_withdrawal_delay",
+      "discriminator": [
+        189,
+        112,
+        145,
+        174,
+        67,
+        53,
+        2,
+        3
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "delay",
+          "type": "i64"
+        }
+      ]
+    },
+    {
       "name": "remove_admin",
       "discriminator": [
         74,
@@ -1767,142 +843,53 @@ export const TAKUMI_PAY_IDL = {
         {
           "name": "owner",
           "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "admin_record"
-          ]
+          "name": "config"
         },
         {
           "name": "admin_pubkey"
         },
         {
           "name": "admin_record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  100,
-                  109,
-                  105,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "admin_pubkey"
-              }
-            ]
-          }
+          "writable": true
         }
       ],
       "args": []
     },
     {
-      "name": "remove_allowed_point_token",
+      "name": "remove_allowed_payment_token",
       "discriminator": [
-        237,
-        16,
-        48,
-        242,
-        33,
-        126,
-        89,
-        118
+        91,
+        159,
+        12,
+        130,
+        241,
+        70,
+        218,
+        219
       ],
       "accounts": [
         {
           "name": "owner",
           "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "allowed_token"
-          ]
-        },
-        {
-          "name": "token_mint"
+          "name": "config"
         },
         {
           "name": "allowed_token",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  108,
-                  108,
-                  111,
-                  119,
-                  101,
-                  100,
-                  95,
-                  112,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ]
-          }
+          "writable": true
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "rotate_backend_signer",
@@ -1919,29 +906,11 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         }
       ],
       "args": [
@@ -1970,22 +939,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "admin_record",
@@ -2021,22 +975,7 @@ export const TAKUMI_PAY_IDL = {
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "admin_record",
@@ -2066,75 +1005,65 @@ export const TAKUMI_PAY_IDL = {
         {
           "name": "owner",
           "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "name": "config"
         },
         {
           "name": "token_mint"
         },
         {
           "name": "spending_limit",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  101,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  108,
-                  105,
-                  109,
-                  105,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ]
-          }
+          "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
         {
           "name": "max_amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_sweep_cap",
+      "discriminator": [
+        89,
+        140,
+        64,
+        106,
+        202,
+        125,
+        121,
+        19
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "token_mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "cap",
           "type": "u64"
         }
       ]
@@ -2154,29 +1083,11 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         }
       ],
       "args": [
@@ -2201,37 +1112,22 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
         },
         {
           "name": "recipient",
           "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -2256,129 +1152,28 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "name": "config"
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
         },
         {
           "name": "token_mint"
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "recipient_token_account",
           "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         }
       ],
       "args": [
@@ -2403,106 +1198,26 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "platform_fee_account"
-          ]
+          "writable": true
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
         },
         {
           "name": "platform_fee_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  108,
-                  97,
-                  116,
-                  102,
-                  111,
-                  114,
-                  109,
-                  95,
-                  102,
-                  101,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "recipient",
           "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -2527,165 +1242,32 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          },
-          "relations": [
-            "platform_fee_account"
-          ]
+          "name": "config"
+        },
+        {
+          "name": "sweep_cap",
+          "writable": true
         },
         {
           "name": "token_mint"
         },
         {
           "name": "platform_fee_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  108,
-                  97,
-                  116,
-                  102,
-                  111,
-                  114,
-                  109,
-                  95,
-                  102,
-                  101,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "recipient_token_account",
           "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         }
       ],
       "args": [
@@ -2710,29 +1292,11 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         }
       ],
       "args": [
@@ -2757,37 +1321,18 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
           "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "writable": true
         },
         {
           "name": "recipient",
           "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "system_program"
         }
       ],
       "args": [
@@ -2812,129 +1357,24 @@ export const TAKUMI_PAY_IDL = {
       "accounts": [
         {
           "name": "owner",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
+          "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
+          "name": "config"
         },
         {
           "name": "token_mint"
         },
         {
           "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "recipient_token_account",
           "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         }
       ],
       "args": [
@@ -2960,16 +1400,16 @@ export const TAKUMI_PAY_IDL = {
       ]
     },
     {
-      "name": "AllowedPointToken",
+      "name": "AllowedPaymentToken",
       "discriminator": [
-        135,
-        129,
-        14,
-        21,
-        72,
-        249,
-        88,
-        234
+        163,
+        134,
+        217,
+        162,
+        24,
+        109,
+        24,
+        205
       ]
     },
     {
@@ -3051,6 +1491,19 @@ export const TAKUMI_PAY_IDL = {
       ]
     },
     {
+      "name": "SweepCap",
+      "discriminator": [
+        111,
+        238,
+        15,
+        72,
+        238,
+        61,
+        31,
+        250
+      ]
+    },
+    {
       "name": "TransactionRecord",
       "discriminator": [
         206,
@@ -3079,7 +1532,6 @@ export const TAKUMI_PAY_IDL = {
   ],
   "events": [
     {
-      "name": "AdminAdded",
       "discriminator": [
         23,
         13,
@@ -3089,10 +1541,10 @@ export const TAKUMI_PAY_IDL = {
         53,
         75,
         251
-      ]
+      ],
+      "name": "AdminAdded"
     },
     {
-      "name": "AdminRemoved",
       "discriminator": [
         59,
         133,
@@ -3102,10 +1554,36 @@ export const TAKUMI_PAY_IDL = {
         79,
         75,
         146
-      ]
+      ],
+      "name": "AdminRemoved"
     },
     {
-      "name": "BackendSignerRotated",
+      "discriminator": [
+        221,
+        186,
+        27,
+        176,
+        101,
+        14,
+        59,
+        48
+      ],
+      "name": "AllowedPaymentTokenAdded"
+    },
+    {
+      "discriminator": [
+        170,
+        148,
+        7,
+        24,
+        59,
+        27,
+        119,
+        30
+      ],
+      "name": "AllowedPaymentTokenRemoved"
+    },
+    {
       "discriminator": [
         26,
         237,
@@ -3115,10 +1593,10 @@ export const TAKUMI_PAY_IDL = {
         82,
         140,
         116
-      ]
+      ],
+      "name": "BackendSignerRotated"
     },
     {
-      "name": "ContractPausedToggled",
       "discriminator": [
         253,
         21,
@@ -3128,10 +1606,10 @@ export const TAKUMI_PAY_IDL = {
         73,
         183,
         234
-      ]
+      ],
+      "name": "ContractPausedToggled"
     },
     {
-      "name": "MaxTransactionAmountUpdated",
       "discriminator": [
         158,
         28,
@@ -3141,10 +1619,10 @@ export const TAKUMI_PAY_IDL = {
         56,
         59,
         73
-      ]
+      ],
+      "name": "MaxTransactionAmountUpdated"
     },
     {
-      "name": "MerchantBackingSwept",
       "discriminator": [
         182,
         240,
@@ -3154,10 +1632,10 @@ export const TAKUMI_PAY_IDL = {
         106,
         29,
         133
-      ]
+      ],
+      "name": "MerchantBackingSwept"
     },
     {
-      "name": "MerchantPaymentProcessed",
       "discriminator": [
         177,
         114,
@@ -3167,10 +1645,10 @@ export const TAKUMI_PAY_IDL = {
         237,
         19,
         122
-      ]
+      ],
+      "name": "MerchantPaymentProcessed"
     },
     {
-      "name": "OwnershipTransferCancelled",
       "discriminator": [
         120,
         203,
@@ -3180,10 +1658,10 @@ export const TAKUMI_PAY_IDL = {
         57,
         253,
         23
-      ]
+      ],
+      "name": "OwnershipTransferCancelled"
     },
     {
-      "name": "OwnershipTransferInitiated",
       "discriminator": [
         181,
         32,
@@ -3193,10 +1671,10 @@ export const TAKUMI_PAY_IDL = {
         64,
         235,
         29
-      ]
+      ],
+      "name": "OwnershipTransferInitiated"
     },
     {
-      "name": "OwnershipTransferred",
       "discriminator": [
         172,
         61,
@@ -3206,10 +1684,62 @@ export const TAKUMI_PAY_IDL = {
         50,
         38,
         98
-      ]
+      ],
+      "name": "OwnershipTransferred"
     },
     {
-      "name": "PlatformFeesSwept",
+      "discriminator": [
+        167,
+        226,
+        220,
+        221,
+        117,
+        155,
+        29,
+        92
+      ],
+      "name": "PendingDelayCancelled"
+    },
+    {
+      "discriminator": [
+        222,
+        236,
+        172,
+        168,
+        27,
+        96,
+        180,
+        164
+      ],
+      "name": "PendingDelayQueued"
+    },
+    {
+      "discriminator": [
+        98,
+        115,
+        152,
+        69,
+        11,
+        141,
+        205,
+        230
+      ],
+      "name": "PendingSweepCapCancelled"
+    },
+    {
+      "discriminator": [
+        174,
+        151,
+        201,
+        72,
+        142,
+        18,
+        85,
+        212
+      ],
+      "name": "PendingSweepCapQueued"
+    },
+    {
       "discriminator": [
         11,
         134,
@@ -3219,10 +1749,10 @@ export const TAKUMI_PAY_IDL = {
         64,
         122,
         35
-      ]
+      ],
+      "name": "PlatformFeesSwept"
     },
     {
-      "name": "PointDepositCreated",
       "discriminator": [
         129,
         49,
@@ -3232,10 +1762,10 @@ export const TAKUMI_PAY_IDL = {
         73,
         105,
         63
-      ]
+      ],
+      "name": "PointDepositCreated"
     },
     {
-      "name": "PointDepositsPausedToggled",
       "discriminator": [
         235,
         30,
@@ -3245,36 +1775,23 @@ export const TAKUMI_PAY_IDL = {
         1,
         240,
         250
-      ]
+      ],
+      "name": "PointDepositsPausedToggled"
     },
     {
-      "name": "PointTokenAdded",
       "discriminator": [
-        56,
-        53,
-        236,
-        45,
-        122,
-        158,
-        212,
-        101
-      ]
+        126,
+        189,
+        162,
+        80,
+        0,
+        130,
+        113,
+        187
+      ],
+      "name": "SweepCapUpdated"
     },
     {
-      "name": "PointTokenRemoved",
-      "discriminator": [
-        38,
-        92,
-        22,
-        15,
-        181,
-        36,
-        64,
-        183
-      ]
-    },
-    {
-      "name": "TransactionCreated",
       "discriminator": [
         55,
         194,
@@ -3284,10 +1801,10 @@ export const TAKUMI_PAY_IDL = {
         142,
         153,
         217
-      ]
+      ],
+      "name": "TransactionCreated"
     },
     {
-      "name": "WithdrawEvent",
       "discriminator": [
         22,
         9,
@@ -3297,10 +1814,10 @@ export const TAKUMI_PAY_IDL = {
         44,
         71,
         192
-      ]
+      ],
+      "name": "WithdrawEvent"
     },
     {
-      "name": "WithdrawalCancelled",
       "discriminator": [
         119,
         175,
@@ -3310,10 +1827,10 @@ export const TAKUMI_PAY_IDL = {
         237,
         229,
         9
-      ]
+      ],
+      "name": "WithdrawalCancelled"
     },
     {
-      "name": "WithdrawalDelayUpdated",
       "discriminator": [
         255,
         161,
@@ -3323,10 +1840,10 @@ export const TAKUMI_PAY_IDL = {
         246,
         65,
         108
-      ]
+      ],
+      "name": "WithdrawalDelayUpdated"
     },
     {
-      "name": "WithdrawalExecuted",
       "discriminator": [
         37,
         78,
@@ -3336,10 +1853,10 @@ export const TAKUMI_PAY_IDL = {
         68,
         173,
         162
-      ]
+      ],
+      "name": "WithdrawalExecuted"
     },
     {
-      "name": "WithdrawalQueued",
       "discriminator": [
         116,
         223,
@@ -3349,7 +1866,8 @@ export const TAKUMI_PAY_IDL = {
         80,
         19,
         250
-      ]
+      ],
+      "name": "WithdrawalQueued"
     }
   ],
   "errors": [
@@ -3507,6 +2025,31 @@ export const TAKUMI_PAY_IDL = {
       "code": 6030,
       "name": "Overflow",
       "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6031,
+      "name": "SweepCapNotSet",
+      "msg": "Sweep cap not set for this token — sweeps fail closed until configured"
+    },
+    {
+      "code": 6032,
+      "name": "SweepCapExceeded",
+      "msg": "Sweep would exceed the per-window cap"
+    },
+    {
+      "code": 6033,
+      "name": "NotALoosening",
+      "msg": "Not a tightening — loosening a control must be queued"
+    },
+    {
+      "code": 6034,
+      "name": "NoPendingChange",
+      "msg": "No pending change queued"
+    },
+    {
+      "code": 6035,
+      "name": "PendingChangeLocked",
+      "msg": "Pending change is still timelocked"
     }
   ],
   "types": [
@@ -3533,29 +2076,29 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "AdminAdded",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "admin",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "AdminRemoved",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "admin",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
-      "name": "AllowedPointToken",
+      "name": "AllowedPaymentToken",
       "type": {
         "kind": "struct",
         "fields": [
@@ -3575,9 +2118,32 @@ export const TAKUMI_PAY_IDL = {
       }
     },
     {
+      "name": "AllowedPaymentTokenAdded",
+      "type": {
+        "fields": [
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "AllowedPaymentTokenRemoved",
+      "type": {
+        "fields": [
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
       "name": "BackendSignerRotated",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "previous",
@@ -3587,7 +2153,8 @@ export const TAKUMI_PAY_IDL = {
             "name": "next",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -3634,6 +2201,20 @@ export const TAKUMI_PAY_IDL = {
             "type": "u64"
           },
           {
+            "name": "pending_withdrawal_delay",
+            "docs": [
+              "Queued reduction of `withdrawal_delay`. Lowering the delay weakens the",
+              "timelock, so it is subject to the delay currently in force — otherwise a",
+              "leaked owner key would just set it to 0 and withdraw in one transaction.",
+              "`pending_delay_unlock_time == 0` means nothing is queued."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "pending_delay_unlock_time",
+            "type": "i64"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -3643,13 +2224,13 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "ContractPausedToggled",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "paused",
             "type": "bool"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -3692,7 +2273,6 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "MaxTransactionAmountUpdated",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "token_mint",
@@ -3702,13 +2282,13 @@ export const TAKUMI_PAY_IDL = {
             "name": "amount",
             "type": "u64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "MerchantBackingSwept",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "token_mint",
@@ -3722,7 +2302,8 @@ export const TAKUMI_PAY_IDL = {
             "name": "amount",
             "type": "u64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -3789,7 +2370,6 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "MerchantPaymentProcessed",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "ref_id",
@@ -3823,7 +2403,8 @@ export const TAKUMI_PAY_IDL = {
             "name": "exchange_rate_id",
             "type": "u64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -3883,19 +2464,18 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "OwnershipTransferCancelled",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "cancelled_pending_owner",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "OwnershipTransferInitiated",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "current_owner",
@@ -3905,13 +2485,13 @@ export const TAKUMI_PAY_IDL = {
             "name": "pending_owner",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "OwnershipTransferred",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "previous_owner",
@@ -3921,7 +2501,68 @@ export const TAKUMI_PAY_IDL = {
             "name": "new_owner",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PendingDelayCancelled",
+      "type": {
+        "fields": [
+          {
+            "name": "delay",
+            "type": "i64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PendingDelayQueued",
+      "type": {
+        "fields": [
+          {
+            "name": "delay",
+            "type": "i64"
+          },
+          {
+            "name": "unlock_time",
+            "type": "i64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PendingSweepCapCancelled",
+      "type": {
+        "fields": [
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "PendingSweepCapQueued",
+      "type": {
+        "fields": [
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "cap",
+            "type": "u64"
+          },
+          {
+            "name": "unlock_time",
+            "type": "i64"
+          }
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -3951,7 +2592,6 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "PlatformFeesSwept",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "token_mint",
@@ -3965,13 +2605,13 @@ export const TAKUMI_PAY_IDL = {
             "name": "amount",
             "type": "u64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "PointDepositCreated",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "deposit_id",
@@ -3997,7 +2637,8 @@ export const TAKUMI_PAY_IDL = {
             "name": "timestamp",
             "type": "i64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -4043,37 +2684,13 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "PointDepositsPausedToggled",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "paused",
             "type": "bool"
           }
-        ]
-      }
-    },
-    {
-      "name": "PointTokenAdded",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "token_mint",
-            "type": "pubkey"
-          }
-        ]
-      }
-    },
-    {
-      "name": "PointTokenRemoved",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "token_mint",
-            "type": "pubkey"
-          }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -4121,9 +2738,75 @@ export const TAKUMI_PAY_IDL = {
       }
     },
     {
-      "name": "TransactionCreated",
+      "name": "SweepCap",
+      "docs": [
+        "Per-token treasury sweep rate limit, plus the queued increase for it.",
+        "",
+        "`cap == 0` (the default, and the state of a token that was never configured)",
+        "blocks sweeps entirely. Unlike `SpendingLimit`, where 0 means \"unbounded\",",
+        "this is a security control, so an unconfigured value must fail closed."
+      ],
       "type": {
         "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "cap",
+            "type": "u64"
+          },
+          {
+            "name": "swept_in_window",
+            "type": "u64"
+          },
+          {
+            "name": "window_start",
+            "type": "i64"
+          },
+          {
+            "name": "pending_cap",
+            "docs": [
+              "Queued increase. Raising a cap weakens a control, so it is subject to the",
+              "withdrawal delay currently in force. 0 unlock_time == nothing pending."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_unlock_time",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SweepCapUpdated",
+      "type": {
+        "fields": [
+          {
+            "name": "token_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "cap",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "TransactionCreated",
+      "type": {
         "fields": [
           {
             "name": "tx_id",
@@ -4161,7 +2844,8 @@ export const TAKUMI_PAY_IDL = {
             "name": "timestamp",
             "type": "i64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
@@ -4219,7 +2903,6 @@ export const TAKUMI_PAY_IDL = {
     {
       "name": "WithdrawEvent",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "recipient",
@@ -4233,49 +2916,49 @@ export const TAKUMI_PAY_IDL = {
             "name": "amount",
             "type": "u64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "WithdrawalCancelled",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "withdrawal_id",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "WithdrawalDelayUpdated",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "delay",
             "type": "i64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "WithdrawalExecuted",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "withdrawal_id",
             "type": "pubkey"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "WithdrawalQueued",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "withdrawal_id",
@@ -4297,7 +2980,8 @@ export const TAKUMI_PAY_IDL = {
             "name": "unlock_time",
             "type": "i64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {

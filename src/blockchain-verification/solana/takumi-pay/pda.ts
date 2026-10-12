@@ -2,7 +2,7 @@ import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 
 export const TAKUMI_PAY_PROGRAM_ID = new PublicKey(
-  "6CCTEtYrk8unNhjYQ7npiLUf1iKQQJU88JSYn8EJLNYy",
+  "Baj91uzqwt8hRaJmke3dV8RdBwjq5MaWEtKNuUFTBBwS",
 );
 
 function bnToLeBytes(value: BN, byteLength: number): Buffer {
