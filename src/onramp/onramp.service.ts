@@ -27,13 +27,13 @@ import {
   OnrampMintError,
   type OnrampSessionView,
 } from "./onramp-kit.client";
+import type { NormalizedOnrampUpdate } from "./onramp-webhook";
 import {
   type OnrampConfig,
   type OnrampDisabledReason,
   type OnrampEnvironment,
   resolveOnrampConfig,
 } from "./onramp.config";
-import type { NormalizedOnrampUpdate } from "./onramp-webhook";
 
 /** What `GET /onramp/config` returns. Never carries the key or widgetChain. */
 export interface OnrampConfigView {
@@ -105,7 +105,7 @@ export class OnrampService {
   ) {
     this.config = resolveOnrampConfig((k) => configService.get<string>(k));
     this.logger.log(
-      `[onramp] env=${this.config.environment} enabled=${this.config.enabled} chains=${this.config.support.map((s) => s.chainKey).join(",") || "none"} host=${this.config.hostedPageUrl ? "remote" : "bundled"}`,
+      `[onramp] env=${this.config.environment} enabled=${this.config.enabled} chains=${this.config.support.map((s) => s.chainKey).join(",") || "none"} page=${this.config.hostedPageUrl ?? "none"}`,
     );
   }
 
@@ -117,9 +117,13 @@ export class OnrampService {
       environment: c.environment,
       widgetBaseUrl: c.widgetBaseUrl,
       hostedPageUrl: c.hostedPageUrl,
-      support: c.enabled
-        ? c.support.map((s) => ({ chainKey: s.chainKey, tokens: s.tokens }))
-        : [],
+      // Sent whenever the flag is on, even before a key or hosted page is
+      // configured, so a debug build can preview the Buy screen (`enabled`
+      // still says whether checkout can actually run).
+      support:
+        c.disabledReason === "flag_off"
+          ? []
+          : c.support.map((s) => ({ chainKey: s.chainKey, tokens: s.tokens })),
       externalLinkHosts: c.externalLinkHosts,
     };
   }

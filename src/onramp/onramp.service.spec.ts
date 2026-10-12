@@ -2,9 +2,9 @@ jest.mock("expo-server-sdk", () => ({ Expo: class {} }));
 
 import { HttpException } from "@nestjs/common";
 import type { ConfigService } from "@nestjs/config";
-import { OnrampMintError, type OnrampKitClient } from "./onramp-kit.client";
-import { isBareHostname, resolveOnrampConfig } from "./onramp.config";
+import { type OnrampKitClient, OnrampMintError } from "./onramp-kit.client";
 import { normalizeOnrampWebhook } from "./onramp-webhook";
+import { isBareHostname, resolveOnrampConfig } from "./onramp.config";
 import { OnrampService } from "./onramp.service";
 
 const OWNER = "0x1111111111111111111111111111111111111111";
@@ -15,6 +15,7 @@ const ENV: Record<string, string> = {
   ONRAMP_ENABLED: "true",
   ONRAMP_API_KEY: "TEST_API_KEY:id:secret",
   ONRAMP_REFERRER_DOMAIN: "onramp.takumipay.xyz",
+  ONRAMP_HOSTED_PAGE_URL: "https://onramp.takumipay.xyz/v1/",
 };
 
 const SESSION = {
@@ -82,12 +83,29 @@ describe("resolveOnrampConfig", () => {
     expect(c.enabled).toBe(false);
   });
 
+  it("is on by default, needing only a key and the hosted page", () => {
+    const c = resolveOnrampConfig(
+      (k) =>
+        (
+          ({
+            ONRAMP_API_KEY: "TEST_API_KEY:id:secret",
+            ONRAMP_HOSTED_PAGE_URL: "https://onramp.takumipay.xyz/v1/",
+          }) as Record<string, string>
+        )[k],
+    );
+    expect(c.enabled).toBe(true);
+    expect(resolveOnrampConfig(() => undefined).disabledReason).toBe(
+      "no_api_key",
+    );
+  });
+
   it("says why it is disabled", () => {
     const reason = (env: Record<string, string>) =>
       resolveOnrampConfig((k) => ({ ...ENV, ...env })[k]).disabledReason;
     expect(reason({})).toBeNull();
     expect(reason({ ONRAMP_ENABLED: "false" })).toBe("flag_off");
     expect(reason({ ONRAMP_API_KEY: "" })).toBe("no_api_key");
+    expect(reason({ ONRAMP_HOSTED_PAGE_URL: "" })).toBe("no_hosted_page");
     expect(reason({ ONRAMP_ENVIRONMENT: "production" })).toBe(
       "no_supported_chain",
     );
@@ -133,6 +151,48 @@ describe("resolveOnrampConfig", () => {
         (k) => ({ ...ENV, ONRAMP_HOSTED_PAGE_URL: "http://x.example" })[k],
       ),
     ).toThrow();
+  });
+
+  it("allows a localhost page in sandbox only, keeping its trailing slash", () => {
+    const local = "http://localhost:5180/v1/";
+    expect(
+      resolveOnrampConfig((k) => ({ ...ENV, ONRAMP_HOSTED_PAGE_URL: local })[k])
+        .hostedPageUrl,
+    ).toBe(local);
+    expect(() =>
+      resolveOnrampConfig(
+        (k) =>
+          ({
+            ...ENV,
+            ONRAMP_ENVIRONMENT: "production",
+            ONRAMP_HOSTED_PAGE_URL: local,
+          })[k],
+      ),
+    ).toThrow();
+    // The LAN address is what the widget refuses as a frame parent.
+    expect(() =>
+      resolveOnrampConfig(
+        (k) =>
+          ({ ...ENV, ONRAMP_HOSTED_PAGE_URL: "http://192.168.1.173:5180/v1/" })[
+            k
+          ],
+      ),
+    ).toThrow();
+  });
+});
+
+describe("OnrampService.getConfigView", () => {
+  it("still lists the chains without a key, so a debug build can preview", () => {
+    const { service } = build({ ONRAMP_API_KEY: "" });
+    const view = service.getConfigView();
+    expect(view.enabled).toBe(false);
+    expect(view.disabledReason).toBe("no_api_key");
+    expect(view.support.map((s) => s.chainKey)).toEqual([ARC]);
+  });
+
+  it("lists nothing when switched off", () => {
+    const { service } = build({ ...ENV, ONRAMP_ENABLED: "false" });
+    expect(service.getConfigView().support).toEqual([]);
   });
 });
 

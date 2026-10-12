@@ -14,9 +14,9 @@
 
 import {
   type AppServerKit,
-  createAppServerKit,
   KitError,
   type MintedOnrampSession,
+  createAppServerKit,
 } from "@circle-fin/app-kit/server";
 import { Injectable, Logger } from "@nestjs/common";
 import type { OnrampConfig } from "./onramp.config";
@@ -80,6 +80,40 @@ export function classifyKitError(err: unknown): OnrampMintError {
 /** Onramp error code for an invalid API key (§2.6). Alert-worthy. */
 export const KIT_CODE_INVALID_API_KEY = 1907;
 
+/**
+ * The session id of a minted session.
+ *
+ * `MintedOnrampSession` types `sessionId` as always present, but the kit
+ * only copies it when the API returns one, and the sandbox API returns
+ * just `{ sessionToken, expiresAt }` (seen 2026-10-10). The id lives in
+ * the token's `sessionId` claim instead, so read it from there. The
+ * claim is decoded, not verified: the token came straight from the API
+ * over TLS, and the id is only our ledger key for matching webhooks.
+ */
+export function sessionIdOf(session: {
+  sessionId?: unknown;
+  sessionToken?: unknown;
+}): string | null {
+  if (typeof session.sessionId === "string" && session.sessionId) {
+    return session.sessionId;
+  }
+  if (typeof session.sessionToken !== "string") return null;
+  const payload = session.sessionToken.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims: unknown = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    );
+    const id =
+      claims !== null && typeof claims === "object"
+        ? (claims as Record<string, unknown>).sessionId
+        : undefined;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 @Injectable()
 export class OnrampKitClient {
   private readonly logger = new Logger(OnrampKitClient.name);
@@ -128,18 +162,28 @@ export class OnrampKitClient {
       throw mapped;
     }
 
+    const sessionId = sessionIdOf(session);
     if (
-      typeof session.sessionId !== "string" ||
+      sessionId === null ||
       typeof session.sessionToken !== "string" ||
       typeof session.widgetUrl !== "string" ||
       typeof session.expiresAt !== "string"
     ) {
-      this.logger.warn("[onramp] createSession returned an incomplete session");
+      // Field names only, so the log says which piece the API left out.
+      const missing = [
+        sessionId === null && "sessionId",
+        typeof session.sessionToken !== "string" && "sessionToken",
+        typeof session.widgetUrl !== "string" && "widgetUrl",
+        typeof session.expiresAt !== "string" && "expiresAt",
+      ].filter(Boolean);
+      this.logger.warn(
+        `[onramp] createSession returned an incomplete session, missing=${missing.join(",")}`,
+      );
       throw new OnrampMintError("upstream", null);
     }
 
     return {
-      sessionId: session.sessionId,
+      sessionId,
       sessionToken: session.sessionToken,
       widgetUrl: session.widgetUrl,
       expiresAt: session.expiresAt,

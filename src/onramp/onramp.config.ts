@@ -32,6 +32,7 @@ export type OnrampDisabledReason =
   | "flag_off"
   | "no_api_key"
   | "no_supported_chain"
+  | "no_hosted_page"
   | "no_referrer_domain";
 
 export interface OnrampConfig {
@@ -44,8 +45,10 @@ export interface OnrampConfig {
   /** Bare hostname, never from a request header (§5.3). */
   referrerDomain: string | null;
   /**
-   * Remote page that hosts the widget (§4.5.1 route A2). Null = the app
-   * mounts the widget from its bundled DOM component (§4.4).
+   * The page that hosts the widget (§4.5.1 route A2, the
+   * `takumipay-onramp` project). Required: the widget's CSP is
+   * `frame-ancestors https: http://localhost:*`, so a page bundled into
+   * the app (`file://`, or Metro on a LAN address) is refused.
    */
   hostedPageUrl: string | null;
   support: OnrampSupportEntry[];
@@ -140,6 +143,35 @@ function parseHttpsUrl(name: string, raw: string | undefined): string | null {
   return url.toString().replace(/\/$/, "");
 }
 
+/**
+ * The hosted page URL, kept exactly as given (its trailing slash makes the
+ * page's relative bundle path resolve). https, or `http://localhost` in
+ * sandbox only: the widget accepts a localhost frame parent, which is how
+ * a dev phone reaches a local page through `adb reverse`.
+ */
+function parseHostedPageUrl(
+  raw: string | undefined,
+  environment: OnrampEnvironment,
+): string | null {
+  if (!raw?.trim()) return null;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error("ONRAMP_HOSTED_PAGE_URL is not a valid URL");
+  }
+  const localDev =
+    environment === "sandbox" &&
+    url.protocol === "http:" &&
+    url.hostname === "localhost";
+  if (url.protocol !== "https:" && !localDev) {
+    throw new Error(
+      "ONRAMP_HOSTED_PAGE_URL must be https (http://localhost only in sandbox)",
+    );
+  }
+  return url.toString();
+}
+
 function parseCsv(raw: string | undefined): string[] | null {
   if (!raw?.trim()) return null;
   return raw
@@ -153,9 +185,9 @@ function parseCsv(raw: string | undefined): string[] | null {
  * boot rather than minting sessions against the wrong origin.
  *
  * `enabled` is true only when the flag is on AND an API key is set AND at
- * least one chain is supported. Production additionally needs a
- * `referrerDomain`, which is enforced there for card / Apple Pay / Google
- * Pay (§2.3).
+ * least one chain is supported AND a hosted page is configured.
+ * Production additionally needs a `referrerDomain`, which is enforced
+ * there for card / Apple Pay / Google Pay (§2.3).
  */
 export function resolveOnrampConfig(
   get: (key: string) => string | undefined,
@@ -173,7 +205,8 @@ export function resolveOnrampConfig(
 
   const apiKey = get("ONRAMP_API_KEY")?.trim() || null;
   const support = parseSupport(get("ONRAMP_SUPPORT")) ?? defaults.support;
-  const flag = get("ONRAMP_ENABLED") === "true";
+  // On unless explicitly switched off; it still needs a key and a chain.
+  const flag = get("ONRAMP_ENABLED") !== "false";
 
   const externalLinkHosts =
     parseCsv(get("ONRAMP_EXTERNAL_LINK_HOSTS")) ?? DEFAULT_EXTERNAL_LINK_HOSTS;
@@ -184,6 +217,10 @@ export function resolveOnrampConfig(
   }
 
   const sessionsPerWindow = Number(get("ONRAMP_SESSION_RATE_LIMIT") ?? "10");
+  const hostedPageUrl = parseHostedPageUrl(
+    get("ONRAMP_HOSTED_PAGE_URL"),
+    environment,
+  );
 
   const disabledReason: OnrampDisabledReason | null = !flag
     ? "flag_off"
@@ -191,9 +228,11 @@ export function resolveOnrampConfig(
       ? "no_api_key"
       : support.length === 0
         ? "no_supported_chain"
-        : environment === "production" && referrerRaw === null
-          ? "no_referrer_domain"
-          : null;
+        : hostedPageUrl === null
+          ? "no_hosted_page"
+          : environment === "production" && referrerRaw === null
+            ? "no_referrer_domain"
+            : null;
 
   return {
     enabled: disabledReason === null,
@@ -207,10 +246,7 @@ export function resolveOnrampConfig(
       parseHttpsUrl("ONRAMP_WIDGET_BASE_URL", get("ONRAMP_WIDGET_BASE_URL")) ??
       defaults.widgetBaseUrl,
     referrerDomain: referrerRaw,
-    hostedPageUrl: parseHttpsUrl(
-      "ONRAMP_HOSTED_PAGE_URL",
-      get("ONRAMP_HOSTED_PAGE_URL"),
-    ),
+    hostedPageUrl,
     support,
     externalLinkHosts,
     sessionsPerWindow:

@@ -27,8 +27,8 @@ import { CreateOnrampSessionDto } from "./dto/onramp.dto";
 import type { OnrampSessionView } from "./onramp-kit.client";
 import {
   ONRAMP_WEBHOOK_VERIFIER,
-  normalizeOnrampWebhook,
   type OnrampWebhookVerifier,
+  normalizeOnrampWebhook,
 } from "./onramp-webhook";
 import {
   type OnrampAuthUser,
