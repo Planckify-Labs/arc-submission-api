@@ -565,15 +565,27 @@ export class BridgeService {
             return adapter ? [adapter] : [];
           })
         : [];
-    if (preferred.length > 0 && (await this.isPreferredSwap(req, policy, preferred))) {
+    const route = `${req.fromAsset} -> ${req.toAsset}`;
+    const isPreferred =
+      preferred.length > 0 && (await this.isPreferredSwap(req, policy, preferred));
+    if (isPreferred) {
       let lastPolicyError: unknown = null;
+      const declines: string[] = [];
       for (const adapter of preferred) {
         try {
           const quote = await adapter.quote(req);
+          // Ops-only signal: the first-choice provider (Tower) declined and a
+          // fallback served the swap. The user just sees the fallback's quote.
+          if (declines.length > 0) {
+            this.logger.error(
+              `[quote] preferred fallback: ${adapter.key} served ${route} after ${declines.join("; ")}`,
+            );
+          }
           return { routable: true, quote: await this.enrichQuote(quote) };
         } catch (error: unknown) {
           lastPolicyError = error;
           const detail = error instanceof Error ? error.message : String(error);
+          declines.push(`${adapter.key} declined (${detail})`);
           this.logger.warn(`[quote] preferred ${adapter.key} declined: ${detail}`);
         }
       }
@@ -584,6 +596,15 @@ export class BridgeService {
     }
     // Policy-only providers (Tower) serve the policy's tokens and nothing
     // else: every other swap is open arbitration among general routers.
+    const skipped = preferred.filter((a) => policy.policyOnly.has(a.key));
+    if (skipped.length > 0) {
+      // Tower could serve this chain but no side is a trusted preferred
+      // token (missing/inactive Token row or an untracked address), so the
+      // swap goes to open arbitration instead.
+      this.logger.warn(
+        `[quote] preferred lane skipped for ${route}: no trusted ${[...policy.symbols].join("/")} side; ${skipped.map((a) => a.key).join(",")} not tried`,
+      );
+    }
     candidates = candidates.filter((a) => !policy.policyOnly.has(a.key));
 
     if (candidates.length === 0) {
