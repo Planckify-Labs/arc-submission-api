@@ -574,11 +574,22 @@ export class BridgeService {
       for (const adapter of preferred) {
         try {
           const quote = await adapter.quote(req);
-          // Ops-only signal: the first-choice provider (Tower) declined and a
-          // fallback served the swap. The user just sees the fallback's quote.
-          if (declines.length > 0) {
+          // Ops-only signal, one line per served swap. A provider ahead of
+          // this one either declined or never got the route at all (for
+          // Tower: TOWER_API_KEY unset, DISABLED_ROUTE_PROVIDERS, or not an
+          // Arc chain). The user just sees the served quote.
+          const notEligible = policy.providers
+            .slice(0, policy.providers.indexOf(adapter.key))
+            .filter((key) => !preferred.some((a) => a.key === key))
+            .map((key) => `${key} not eligible on this chain`);
+          const reasons = [...notEligible, ...declines];
+          if (reasons.length > 0) {
             this.logger.error(
-              `[quote] preferred fallback: ${adapter.key} served ${route} after ${declines.join("; ")}`,
+              `[quote] preferred fallback: ${adapter.key} served ${route} after ${reasons.join("; ")}`,
+            );
+          } else {
+            this.logger.log(
+              `[quote] swap on ${req.fromChain} served by ${adapter.key} (${route})`,
             );
           }
           return { routable: true, quote: await this.enrichQuote(quote) };
