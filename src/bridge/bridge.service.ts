@@ -658,6 +658,18 @@ export class BridgeService {
         if (!best || floorOf(result.value) > floorOf(best)) best = result.value;
       });
       if (best) {
+        if (req.fromChain === req.toChain) {
+          const served: BridgeQuote = best;
+          // Ops-only: a swap that never entered the preferred lane. Names the
+          // preferred providers that could not serve this chain at all (for
+          // Tower: TOWER_API_KEY unset, or not an Arc chain).
+          const absent = policy.providers.filter(
+            (key) => !preferred.some((a) => a.key === key),
+          );
+          this.logger.log(
+            `[quote] swap on ${req.fromChain} served by ${served.provider} (${route}); preferred lane not used${absent.length > 0 ? `; not eligible here: ${absent.join(",")}` : ""}`,
+          );
+        }
         return { routable: true, quote: await this.enrichQuote(best) };
       }
     }

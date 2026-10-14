@@ -154,6 +154,12 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
         new Set(list.filter((a) => isAddress(a)).map((a) => a.toLowerCase())),
       );
     }
+    const key = this.configService.get<string>("TOWER_API_KEY") || "";
+    if (key) {
+      this.logger.log(`Tower swaps enabled (key ${key.slice(0, 8)}…)`);
+    } else {
+      this.logger.warn("Tower swaps disabled: TOWER_API_KEY is not set");
+    }
   }
 
   // ── capability seam ───────────────────────────────────────────────────
