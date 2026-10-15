@@ -28,15 +28,13 @@
  */
 
 import { randomUUID } from "crypto";
-import { Injectable, Logger, Optional } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { type PublicClient, erc20Abi, getAddress, isAddress } from "viem";
 import { DefiError } from "../../strategies/errors/defi-error";
 import { findChainById } from "../../strategies/targets/chain-directory";
 import { getPublicClientForChain } from "../../strategies/targets/rpc";
-import { ValkeyService } from "../../valkey/valkey.service";
 import { buildCaip19, parseCaip19 } from "../caip";
-import { HeldFloorStore, declaredSlippageBps, shownFloor } from "../held-floor";
 import { effectiveSlippageBps } from "../slippage";
 import type { BridgeRouteAdapter } from "../registry";
 import type {
@@ -137,13 +135,8 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
   private readonly client: TowerClient;
   private readonly executors: Map<number, Set<string>>;
   private readonly tokenCache = new Map<string, BridgeToken>();
-  private readonly floors: HeldFloorStore;
 
-  constructor(
-    private readonly configService: ConfigService,
-    @Optional() valkey?: ValkeyService,
-  ) {
-    this.floors = new HeldFloorStore(valkey, this.key);
+  constructor(private readonly configService: ConfigService) {
     this.client = new TowerClient(
       this.configService.get<string>("TOWER_API_KEY") || "",
       this.configService.get<string>("TOWER_API_URL") || DEFAULT_TOWER_API_URL,
@@ -215,25 +208,10 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
     if (amountRaw === 0n) {
       throw new DefiError("unsupported_asset", "amount rounds to zero");
     }
-    const defaultBps = slippageBpsFor(from.token.symbol, to.token.symbol);
-    // The floor the user was shown for this exact swap: sent by the device
-    // (5.26+), else remembered from the card quote (see held-floor.ts). A
-    // pinned slippage (internal callers) bypasses it.
-    const floorKey = this.floors.key({
-      chainId: arc.chainId,
-      wallet: req.fromAddress,
-      inputToken: from.address,
-      outputToken: to.address,
-      amountRaw: amountRaw.toString(),
-    });
-    const held =
-      req.slippageBps !== undefined
-        ? null
-        : (parseRaw(req.minReceiveRaw) ?? (await this.floors.get(floorKey)));
-    const slippageBps = effectiveSlippageBps(defaultBps, {
-      slippageBps: req.slippageBps,
-      minReceiveRaw: held?.toString(),
-    });
+    const slippageBps = effectiveSlippageBps(
+      slippageBpsFor(from.token.symbol, to.token.symbol),
+      req,
+    );
 
     const { quote, built } = await this.quoteAndBuild({
       chainId: arc.chainId,
@@ -251,16 +229,6 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
       client,
     );
 
-    // checkQuote guaranteed both parse.
-    const outRaw = BigInt(quote.outputAmountRaw as string);
-    const floor = shownFloor({
-      outRaw,
-      onChainMin: BigInt(quote.minOutRaw as string),
-      defaultBps,
-      held,
-    });
-    if (req.slippageBps === undefined) await this.floors.set(floorKey, floor);
-
     return this.toBridgeQuote({
       req,
       quote,
@@ -269,9 +237,7 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
       from,
       to,
       amountRaw: amountRaw.toString(),
-      floor,
-      slippageBps:
-        held === null ? slippageBps : declaredSlippageBps(outRaw, floor),
+      slippageBps,
     });
   }
 
@@ -416,8 +382,6 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
     from: ResolvedSide;
     to: ResolvedSide;
     amountRaw: string;
-    /** The floor reported to the device; never above the on-chain minimum. */
-    floor: bigint;
     slippageBps: number;
   }): BridgeQuote {
     const { req, quote, built, executor, from, to, amountRaw } = args;
@@ -492,7 +456,7 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
         address: req.fromAddress,
         amountRaw: quote.outputAmountRaw as string,
       },
-      toAmountMinRaw: args.floor.toString(),
+      toAmountMinRaw: quote.minOutRaw as string,
       kind: "swap",
       priceImpact: towerPriceImpactPercent(quote.priceImpact),
       // The venue that actually won, named the same way the provider label

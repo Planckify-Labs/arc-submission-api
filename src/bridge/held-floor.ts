@@ -5,13 +5,17 @@
  * by the device right before signing. The device refuses to sign when the
  * signing quote's `toAmountMinRaw` is below the card's. Both are
  * `expected × (1 − slippage)`, so at the same slippage ANY tick down in the
- * expected output fails the swap; Tower's Arc quotes jitter by a raw unit
- * or two between calls, so it failed most of the time.
+ * expected output fails the swap. Tower's and LI.FI's Arc quotes both
+ * jitter by a raw unit or two between calls.
  *
  * Devices from 5.26 send the card's floor as `minReceiveRaw` and the server
  * tightens slippage to hold it (`effectiveSlippageBps`). Earlier builds do
  * not send it, so the server remembers the floor it last showed for the
  * same wallet, pair and amount and uses that instead.
+ *
+ * Applied by `BridgeService` to every same-chain swap, whichever provider
+ * serves it: both providers tighten their on-chain slippage from
+ * `minReceiveRaw` and report their on-chain minimum as `toAmountMinRaw`.
  *
  * With a held floor, the route is built at the tighter slippage, and the
  * REPORTED floor is the held one (raised to the default-slippage floor when
@@ -77,28 +81,28 @@ function minBig(a: bigint, b: bigint): bigint {
 export class HeldFloorStore {
   private readonly logger = new Logger(HeldFloorStore.name);
 
-  constructor(
-    private readonly valkey: ValkeyService | undefined,
-    private readonly namespace: string,
-  ) {}
+  constructor(private readonly valkey: ValkeyService | undefined) {}
 
+  /** One swap: same chain, wallet, pair and amount as the card quote. */
   key(parts: {
-    chainId: number;
+    chain: string;
     wallet: string;
-    inputToken: string;
-    outputToken: string;
+    fromAsset: string;
+    toAsset: string;
     amountRaw: string;
   }): string {
+    // EVM hex folds case; other namespaces (base58) are case-sensitive.
+    const fold = parts.chain.startsWith("eip155:")
+      ? (v: string) => v.toLowerCase()
+      : (v: string) => v;
     return [
-      "bridge",
-      this.namespace,
-      "floor",
-      parts.chainId,
-      parts.wallet.toLowerCase(),
-      parts.inputToken.toLowerCase(),
-      parts.outputToken.toLowerCase(),
+      "bridge:swap-floor",
+      parts.chain,
+      fold(parts.wallet),
+      fold(parts.fromAsset),
+      fold(parts.toAsset),
       parts.amountRaw,
-    ].join(":");
+    ].join("|");
   }
 
   async get(key: string): Promise<bigint | null> {

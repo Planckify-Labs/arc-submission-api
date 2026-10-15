@@ -15,12 +15,14 @@ import { PrismaService } from "../prisma/prisma.service";
 import { AlchemyTokenMetadataClient } from "../tokens/alchemy-token-metadata.client";
 import { AlchemyPricesClient } from "../strategies/external/alchemy-prices.client";
 import { DefiError } from "../strategies/errors/defi-error";
+import { ValkeyService } from "../valkey/valkey.service";
 import { chainOfAsset, isNativeAsset, parseCaip2, parseCaip19 } from "./caip";
+import { HeldFloorStore, declaredSlippageBps, shownFloor } from "./held-floor";
 import { CircleAppKitClient } from "./providers/circle/app-kit.client";
 import { caip2ForCircleChain } from "./providers/circle/circle-route";
 // Generic contract → CAIP-19 per namespace (erc20 / token / coin); it
 // lives with the LI.FI mapping but encodes no LI.FI knowledge.
-import { lifiTokenToCaip19 } from "./providers/lifi.mapping";
+import { lifiTokenToCaip19, slippageBpsFor } from "./providers/lifi.mapping";
 import {
   type BridgeRouteAdapter,
   listBridgeAdapters,
@@ -72,6 +74,17 @@ function floorOf(quote: BridgeQuote): bigint {
   }
 }
 
+function parseAmount(v: string | undefined): bigint | null {
+  return v && /^[0-9]+$/.test(v) ? BigInt(v) : null;
+}
+
+/** The floor a same-chain swap quote is held to (see held-floor.ts). */
+interface FloorHold {
+  key: string;
+  held: bigint | null;
+  source: "device" | "remembered" | "none";
+}
+
 /** How long the trusted-token set is reused. Issuer pins change by release. */
 const TRUSTED_TOKENS_TTL_MS = 5 * 60_000;
 
@@ -106,6 +119,8 @@ export class BridgeService {
   private trustedTokensCache: { at: number; keys: Set<string> } | null = null;
   private catalogueLogosCache: { at: number; logos: Map<string, string> } | null =
     null;
+  /** Swap floors held across the card quote and the signing re-quote. */
+  private readonly floors: HeldFloorStore;
 
   constructor(
     @Optional() private readonly prisma?: PrismaService,
@@ -113,7 +128,10 @@ export class BridgeService {
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly prices?: AlchemyPricesClient,
     @Optional() private readonly tokenMetadata?: AlchemyTokenMetadataClient,
-  ) {}
+    @Optional() valkey?: ValkeyService,
+  ) {
+    this.floors = new HeldFloorStore(valkey);
+  }
 
   /**
    * The swap routing policy, from config (a feature flag, flipped without a
@@ -540,6 +558,15 @@ export class BridgeService {
       return { routable: false, reason: "chain_not_supported" };
     }
 
+    // A same-chain swap keeps the floor the user approved across the card
+    // quote and the device's signing re-quote: adapters quote at the
+    // tighter slippage that holds it (held-floor.ts).
+    const hold = await this.floorHold(req);
+    const adapterReq: BridgeQuoteRequest =
+      hold && hold.held !== null
+        ? { ...req, minReceiveRaw: hold.held.toString() }
+        : req;
+
     let candidates = resolveBridgeAdapters(
       req.fromChain,
       req.toChain,
@@ -573,7 +600,7 @@ export class BridgeService {
       const declines: string[] = [];
       for (const adapter of preferred) {
         try {
-          const quote = await adapter.quote(req);
+          const quote = await adapter.quote(adapterReq);
           // Ops-only signal, one line per served swap. A provider ahead of
           // this one either declined or never got the route at all (for
           // Tower: TOWER_API_KEY unset, DISABLED_ROUTE_PROVIDERS, or not an
@@ -592,7 +619,12 @@ export class BridgeService {
               `[quote] swap on ${req.fromChain} served by ${adapter.key} (${route})`,
             );
           }
-          return { routable: true, quote: await this.enrichQuote(quote) };
+          return {
+            routable: true,
+            quote: await this.enrichQuote(
+              await this.holdFloor(quote, hold, route),
+            ),
+          };
         } catch (error: unknown) {
           lastPolicyError = error;
           const detail = error instanceof Error ? error.message : String(error);
@@ -654,7 +686,9 @@ export class BridgeService {
       ) {
         batch.push(candidates[i++]);
       }
-      const settled = await Promise.allSettled(batch.map((a) => a.quote(req)));
+      const settled = await Promise.allSettled(
+        batch.map((a) => a.quote(adapterReq)),
+      );
       let best: BridgeQuote | null = null;
       settled.forEach((result, idx) => {
         if (result.status === "rejected") {
@@ -681,7 +715,12 @@ export class BridgeService {
             `[quote] swap on ${req.fromChain} served by ${served.provider} (${route}); preferred lane not used${absent.length > 0 ? `; not eligible here: ${absent.join(",")}` : ""}`,
           );
         }
-        return { routable: true, quote: await this.enrichQuote(best) };
+        return {
+          routable: true,
+          quote: await this.enrichQuote(
+            await this.holdFloor(best, hold, route),
+          ),
+        };
       }
     }
 
@@ -692,6 +731,71 @@ export class BridgeService {
       return { routable: false, reason: "check_unavailable" };
     }
     return { routable: false, reason: "no_route_found" };
+  }
+
+  /**
+   * The floor to hold for a same-chain swap: the device's `minReceiveRaw`
+   * (5.26+), else the one this server last reported for the same wallet,
+   * pair and amount (5.25.x sends none). `null` for a bridge, or when an
+   * internal caller pins the slippage.
+   */
+  private async floorHold(req: BridgeQuoteRequest): Promise<FloorHold | null> {
+    if (req.fromChain !== req.toChain || req.slippageBps !== undefined) {
+      return null;
+    }
+    const key = this.floors.key({
+      chain: req.fromChain,
+      wallet: req.fromAddress,
+      fromAsset: req.fromAsset,
+      toAsset: req.toAsset,
+      amountRaw: req.amountRaw,
+    });
+    const sent = parseAmount(req.minReceiveRaw);
+    if (sent !== null) return { key, held: sent, source: "device" };
+    const remembered = await this.floors.get(key);
+    return {
+      key,
+      held: remembered,
+      source: remembered === null ? "none" : "remembered",
+    };
+  }
+
+  /**
+   * Report the held floor on the winning swap quote, never above its own
+   * on-chain minimum, and remember what was reported for the signing
+   * re-quote. One log line per swap quote: the numbers that decide whether
+   * the device accepts it.
+   */
+  private async holdFloor(
+    quote: BridgeQuote,
+    hold: FloorHold | null,
+    route: string,
+  ): Promise<BridgeQuote> {
+    if (!hold || quote.kind !== "swap") return quote;
+    const outRaw = parseAmount(quote.to?.amountRaw);
+    const onChainMin = parseAmount(quote.toAmountMinRaw);
+    if (outRaw === null || onChainMin === null || outRaw === 0n) return quote;
+    // The route-class default both swap adapters quote with.
+    const defaultBps = slippageBpsFor(
+      quote.from.token.symbol,
+      quote.to.token.symbol,
+    );
+    const floor = shownFloor({
+      outRaw,
+      onChainMin,
+      defaultBps,
+      held: hold.held,
+    });
+    await this.floors.set(hold.key, floor);
+    this.logger.log(
+      `[quote] swap floor via ${quote.provider} (${route}): out ${outRaw}, on-chain min ${onChainMin}, held ${hold.held ?? "none"} (${hold.source}), reported ${floor}`,
+    );
+    if (hold.held === null) return quote;
+    return {
+      ...quote,
+      toAmountMinRaw: floor.toString(),
+      slippageBps: declaredSlippageBps(outRaw, floor),
+    };
   }
 
   async status(ref: BridgeRef): Promise<BridgeStatus> {

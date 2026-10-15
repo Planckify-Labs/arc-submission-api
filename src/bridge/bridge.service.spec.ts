@@ -797,3 +797,142 @@ describe("picker icons: Arc USDC is an ERC-20 even when flagged native", () => {
     expect(r.pairs[0].from.logoUri).toBe("https://cdn.example/usdc.png");
   });
 });
+
+describe("BridgeService held swap floor (card quote → signing re-quote)", () => {
+  afterEach(() => resetBridgeAdapters());
+
+  /** ValkeyService's get/set contract: JSON in, JSON.parse out. */
+  function fakeValkey(opts: { failing?: boolean } = {}) {
+    const rows = new Map<string, string>();
+    return {
+      get: jest.fn((k: string) => {
+        if (opts.failing) return Promise.reject(new Error("valkey down"));
+        const v = rows.get(k);
+        return Promise.resolve(v === undefined ? null : JSON.parse(v));
+      }),
+      set: jest.fn((k: string, v: unknown) => {
+        if (opts.failing) return Promise.reject(new Error("valkey down"));
+        rows.set(k, JSON.stringify(v));
+        return Promise.resolve(true);
+      }),
+    } as never;
+  }
+
+  /**
+   * A swap provider that quotes `outs` in turn and, like Tower and LI.FI,
+   * tightens its on-chain minimum to 15 bps when handed a floor to hold.
+   */
+  function swapper(key: string, outs: bigint[]) {
+    const quote = jest.fn((r: { minReceiveRaw?: string }) => {
+      const out = outs.shift();
+      if (out === undefined) return Promise.reject(new Error("no more quotes"));
+      const bps = r.minReceiveRaw ? 15n : 30n;
+      return Promise.resolve({
+        provider: key,
+        kind: "swap",
+        from: { token: { caip19: req.fromAsset, symbol: "USDC" } },
+        to: {
+          token: { caip19: req.toAsset, symbol: "EURC" },
+          amountRaw: out.toString(),
+        },
+        toAmountMinRaw: ((out * (10_000n - bps)) / 10_000n).toString(),
+        slippageBps: Number(bps),
+      } as unknown as BridgeQuote);
+    });
+    return {
+      key,
+      kinds: ["swap", "bridge"] as const,
+      supports: () => true,
+      quote,
+      status: jest.fn(),
+      resolveToken: jest.fn(async () => null),
+      listSupportedChains: async () => [],
+      listTools: async () => [],
+    };
+  }
+
+  const service = (valkey?: never) =>
+    new BridgeService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      valkey,
+    );
+
+  function floorIn(r: Awaited<ReturnType<BridgeService["quote"]>>): bigint {
+    if (!r.routable) throw new Error("not routable");
+    return BigInt(r.quote.toAmountMinRaw);
+  }
+
+  // Live Arc numbers (2026-10-15): 889052 then 889051 one call later.
+  it("holds the card's floor through a one-unit tick down when the device sends none (5.25)", async () => {
+    const lifi = swapper("lifi", [889052n, 889051n]);
+    registerBridgeAdapter(lifi as never);
+    const svc = service(fakeValkey());
+
+    const card = await svc.quote(req);
+    const signing = await svc.quote(req);
+
+    expect(floorIn(card)).toBe(886384n);
+    // The signing re-quote is built tighter and reports the approved floor.
+    expect(lifi.quote.mock.calls[1][0]).toMatchObject({
+      minReceiveRaw: "886384",
+    });
+    expect(floorIn(signing)).toBe(886384n);
+    if (!signing.routable) return;
+    expect(signing.quote.slippageBps).toBe(30);
+  });
+
+  it("holds the floor across providers when the signing quote falls back", async () => {
+    const svc = service(fakeValkey());
+    registerBridgeAdapter(swapper("a", [889052n]) as never);
+    const card = await svc.quote(req);
+    resetBridgeAdapters();
+    registerBridgeAdapter(swapper("b", [889050n]) as never);
+    const signing = await svc.quote(req);
+    expect(floorIn(signing)).toBeGreaterThanOrEqual(floorIn(card));
+  });
+
+  it("uses the floor the device sends (5.26+) without the cache", async () => {
+    const lifi = swapper("lifi", [889051n]);
+    registerBridgeAdapter(lifi as never);
+    const r = await service().quote({ ...req, minReceiveRaw: "886384" });
+    expect(lifi.quote.mock.calls[0][0]).toMatchObject({
+      minReceiveRaw: "886384",
+    });
+    expect(floorIn(r)).toBe(886384n);
+  });
+
+  it("refuses to hide a real drop: the fresh floor lands under the held one", async () => {
+    registerBridgeAdapter(swapper("lifi", [889052n, 887000n]) as never);
+    const svc = service(fakeValkey());
+    await svc.quote(req);
+    expect(floorIn(await svc.quote(req))).toBe(884339n);
+  });
+
+  it("leaves cross-chain quotes alone", async () => {
+    const lifi = swapper("lifi", [889052n, 889051n]);
+    registerBridgeAdapter(lifi as never);
+    const svc = service(fakeValkey());
+    const bridge = {
+      ...req,
+      toChain: ARB,
+      toAsset: `${ARB}/erc20:0xaf88d065e77c8cc2239327c5edb3a432268e5831`,
+    };
+    await svc.quote(bridge);
+    await svc.quote(bridge);
+    expect(lifi.quote.mock.calls[1][0]).not.toHaveProperty("minReceiveRaw");
+  });
+
+  it("quotes as before when Valkey is down", async () => {
+    const lifi = swapper("lifi", [889052n, 889051n]);
+    registerBridgeAdapter(lifi as never);
+    const svc = service(fakeValkey({ failing: true }));
+    await svc.quote(req);
+    const signing = await svc.quote(req);
+    expect(lifi.quote.mock.calls[1][0]).not.toHaveProperty("minReceiveRaw");
+    expect(floorIn(signing)).toBe(886383n);
+  });
+});
