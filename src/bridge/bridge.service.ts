@@ -12,11 +12,17 @@ import {
   type TBlockchainRow,
 } from "../blockchains/blockchain-enricher";
 import { PrismaService } from "../prisma/prisma.service";
+import { AlchemyTokenMetadataClient } from "../tokens/alchemy-token-metadata.client";
 import { AlchemyPricesClient } from "../strategies/external/alchemy-prices.client";
 import { DefiError } from "../strategies/errors/defi-error";
-import { chainOfAsset, isNativeAsset, parseCaip19 } from "./caip";
+import { ValkeyService } from "../valkey/valkey.service";
+import { chainOfAsset, isNativeAsset, parseCaip2, parseCaip19 } from "./caip";
+import { HeldFloorStore, declaredSlippageBps, shownFloor } from "./held-floor";
 import { CircleAppKitClient } from "./providers/circle/app-kit.client";
 import { caip2ForCircleChain } from "./providers/circle/circle-route";
+// Generic contract → CAIP-19 per namespace (erc20 / token / coin); it
+// lives with the LI.FI mapping but encodes no LI.FI knowledge.
+import { lifiTokenToCaip19, slippageBpsFor } from "./providers/lifi.mapping";
 import {
   type BridgeRouteAdapter,
   listBridgeAdapters,
@@ -25,6 +31,9 @@ import {
 import type {
   BridgeQuote,
   BridgeQuoteRequest,
+  BridgeReach,
+  BridgeRoutePair,
+  BridgeRouteTokens,
   BridgeToken,
   BridgeRef,
   BridgeStatus,
@@ -65,6 +74,17 @@ function floorOf(quote: BridgeQuote): bigint {
   }
 }
 
+function parseAmount(v: string | undefined): bigint | null {
+  return v && /^[0-9]+$/.test(v) ? BigInt(v) : null;
+}
+
+/** The floor a same-chain swap quote is held to (see held-floor.ts). */
+interface FloorHold {
+  key: string;
+  held: bigint | null;
+  source: "device" | "remembered" | "none";
+}
+
 /** How long the trusted-token set is reused. Issuer pins change by release. */
 const TRUSTED_TOKENS_TTL_MS = 5 * 60_000;
 
@@ -77,22 +97,41 @@ function tokenKey(caip2: string, reference: string): string {
   return `${caip2}|${caip2.startsWith("eip155:") ? reference.toLowerCase() : reference}`;
 }
 
+/** Icon lookups in flight at once (each is cached for a week). */
+const LOGO_LOOKUP_CONCURRENCY = 8;
+
+/** Most tokens a picker list returns; search covers the long tail. */
+const TOKEN_LIST_MAX = 80;
+
 /** How long the enabled-chain set is reused before re-reading the rows. */
 const ENABLED_CHAINS_TTL_MS = 60_000;
 
 @Injectable()
 export class BridgeService {
   private readonly logger = new Logger(BridgeService.name);
-  private enabledChainsCache: { at: number; chains: Set<Caip2> } | null = null;
+  private enabledChainsCache: {
+    at: number;
+    chains: Set<Caip2>;
+    /** CAIP-2 → is a testnet, from the same rows. */
+    testnet: Map<Caip2, boolean>;
+  } | null = null;
 
   private trustedTokensCache: { at: number; keys: Set<string> } | null = null;
+  private catalogueLogosCache: { at: number; logos: Map<string, string> } | null =
+    null;
+  /** Swap floors held across the card quote and the signing re-quote. */
+  private readonly floors: HeldFloorStore;
 
   constructor(
     @Optional() private readonly prisma?: PrismaService,
     @Optional() private readonly circle?: CircleAppKitClient,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly prices?: AlchemyPricesClient,
-  ) {}
+    @Optional() private readonly tokenMetadata?: AlchemyTokenMetadataClient,
+    @Optional() valkey?: ValkeyService,
+  ) {
+    this.floors = new HeldFloorStore(valkey);
+  }
 
   /**
    * The swap routing policy, from config (a feature flag, flipped without a
@@ -375,20 +414,43 @@ export class BridgeService {
     try {
       const rows = await this.prisma.blockchain.findMany({
         where: { isActive: true },
-        select: { chainId: true, chainSlug: true, type: true, name: true },
+        select: {
+          chainId: true,
+          chainSlug: true,
+          type: true,
+          name: true,
+          isTestnet: true,
+        },
       });
       const chains = new Set<Caip2>();
+      const testnet = new Map<Caip2, boolean>();
       for (const row of rows) {
         const caip2 = buildCaip2Id(row as unknown as TBlockchainRow);
-        if (caip2) chains.add(caip2);
+        if (!caip2) continue;
+        chains.add(caip2);
+        testnet.set(caip2, Boolean(row.isTestnet));
       }
-      this.enabledChainsCache = { at: Date.now(), chains };
+      this.enabledChainsCache = { at: Date.now(), chains, testnet };
       return chains;
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[enabledChains] row read failed: ${detail}`);
       return cached?.chains ?? null;
     }
+  }
+
+  /**
+   * Whether two chains sit on different network tiers (testnet vs
+   * mainnet). A provider reaching both is not a route between them:
+   * LI.FI's `supports()` answered yes for Base Sepolia → Arbitrum mainnet,
+   * where its own `/connections` has nothing. `false` when unknown.
+   */
+  private async crossesTiers(a: Caip2, b: Caip2): Promise<boolean> {
+    await this.enabledChains();
+    const tiers = this.enabledChainsCache?.testnet;
+    const ta = tiers?.get(a);
+    const tb = tiers?.get(b);
+    return ta !== undefined && tb !== undefined && ta !== tb;
   }
 
   /**
@@ -462,6 +524,11 @@ export class BridgeService {
     };
   }
 
+  /**
+   * Quote a route. A signing-time re-quote carries the user's approved
+   * minimum (`minReceiveRaw`); adapters then quote at a tighter slippage
+   * so the fresh floor still meets it (`effectiveSlippageBps`).
+   */
   async quote(req: BridgeQuoteRequest): Promise<BridgeQuoteResult> {
     // A same-chain request is a swap. It is routable only where an adapter
     // explicitly serves one (`tower` on Arc); everywhere else it stays the
@@ -487,6 +554,18 @@ export class BridgeService {
     ) {
       return { routable: false, reason: "chain_not_enabled" };
     }
+    if (await this.crossesTiers(req.fromChain, req.toChain)) {
+      return { routable: false, reason: "chain_not_supported" };
+    }
+
+    // A same-chain swap keeps the floor the user approved across the card
+    // quote and the device's signing re-quote: adapters quote at the
+    // tighter slippage that holds it (held-floor.ts).
+    const hold = await this.floorHold(req);
+    const adapterReq: BridgeQuoteRequest =
+      hold && hold.held !== null
+        ? { ...req, minReceiveRaw: hold.held.toString() }
+        : req;
 
     let candidates = resolveBridgeAdapters(
       req.fromChain,
@@ -513,15 +592,43 @@ export class BridgeService {
             return adapter ? [adapter] : [];
           })
         : [];
-    if (preferred.length > 0 && (await this.isPreferredSwap(req, policy, preferred))) {
+    const route = `${req.fromAsset} -> ${req.toAsset}`;
+    const isPreferred =
+      preferred.length > 0 && (await this.isPreferredSwap(req, policy, preferred));
+    if (isPreferred) {
       let lastPolicyError: unknown = null;
+      const declines: string[] = [];
       for (const adapter of preferred) {
         try {
-          const quote = await adapter.quote(req);
-          return { routable: true, quote: await this.enrichQuote(quote) };
+          const quote = await adapter.quote(adapterReq);
+          // Ops-only signal, one line per served swap. A provider ahead of
+          // this one either declined or never got the route at all (for
+          // Tower: TOWER_API_KEY unset, DISABLED_ROUTE_PROVIDERS, or not an
+          // Arc chain). The user just sees the served quote.
+          const notEligible = policy.providers
+            .slice(0, policy.providers.indexOf(adapter.key))
+            .filter((key) => !preferred.some((a) => a.key === key))
+            .map((key) => `${key} not eligible on this chain`);
+          const reasons = [...notEligible, ...declines];
+          if (reasons.length > 0) {
+            this.logger.error(
+              `[quote] preferred fallback: ${adapter.key} served ${route} after ${reasons.join("; ")}`,
+            );
+          } else {
+            this.logger.log(
+              `[quote] swap on ${req.fromChain} served by ${adapter.key} (${route})`,
+            );
+          }
+          return {
+            routable: true,
+            quote: await this.enrichQuote(
+              await this.holdFloor(quote, hold, route),
+            ),
+          };
         } catch (error: unknown) {
           lastPolicyError = error;
           const detail = error instanceof Error ? error.message : String(error);
+          declines.push(`${adapter.key} declined (${detail})`);
           this.logger.warn(`[quote] preferred ${adapter.key} declined: ${detail}`);
         }
       }
@@ -532,6 +639,15 @@ export class BridgeService {
     }
     // Policy-only providers (Tower) serve the policy's tokens and nothing
     // else: every other swap is open arbitration among general routers.
+    const skipped = preferred.filter((a) => policy.policyOnly.has(a.key));
+    if (skipped.length > 0) {
+      // Tower could serve this chain but no side is a trusted preferred
+      // token (missing/inactive Token row or an untracked address), so the
+      // swap goes to open arbitration instead.
+      this.logger.warn(
+        `[quote] preferred lane skipped for ${route}: no trusted ${[...policy.symbols].join("/")} side; ${skipped.map((a) => a.key).join(",")} not tried`,
+      );
+    }
     candidates = candidates.filter((a) => !policy.policyOnly.has(a.key));
 
     if (candidates.length === 0) {
@@ -570,7 +686,9 @@ export class BridgeService {
       ) {
         batch.push(candidates[i++]);
       }
-      const settled = await Promise.allSettled(batch.map((a) => a.quote(req)));
+      const settled = await Promise.allSettled(
+        batch.map((a) => a.quote(adapterReq)),
+      );
       let best: BridgeQuote | null = null;
       settled.forEach((result, idx) => {
         if (result.status === "rejected") {
@@ -585,7 +703,24 @@ export class BridgeService {
         if (!best || floorOf(result.value) > floorOf(best)) best = result.value;
       });
       if (best) {
-        return { routable: true, quote: await this.enrichQuote(best) };
+        if (req.fromChain === req.toChain) {
+          const served: BridgeQuote = best;
+          // Ops-only: a swap that never entered the preferred lane. Names the
+          // preferred providers that could not serve this chain at all (for
+          // Tower: TOWER_API_KEY unset, or not an Arc chain).
+          const absent = policy.providers.filter(
+            (key) => !preferred.some((a) => a.key === key),
+          );
+          this.logger.log(
+            `[quote] swap on ${req.fromChain} served by ${served.provider} (${route}); preferred lane not used${absent.length > 0 ? `; not eligible here: ${absent.join(",")}` : ""}`,
+          );
+        }
+        return {
+          routable: true,
+          quote: await this.enrichQuote(
+            await this.holdFloor(best, hold, route),
+          ),
+        };
       }
     }
 
@@ -596,6 +731,71 @@ export class BridgeService {
       return { routable: false, reason: "check_unavailable" };
     }
     return { routable: false, reason: "no_route_found" };
+  }
+
+  /**
+   * The floor to hold for a same-chain swap: the device's `minReceiveRaw`
+   * (5.26+), else the one this server last reported for the same wallet,
+   * pair and amount (5.25.x sends none). `null` for a bridge, or when an
+   * internal caller pins the slippage.
+   */
+  private async floorHold(req: BridgeQuoteRequest): Promise<FloorHold | null> {
+    if (req.fromChain !== req.toChain || req.slippageBps !== undefined) {
+      return null;
+    }
+    const key = this.floors.key({
+      chain: req.fromChain,
+      wallet: req.fromAddress,
+      fromAsset: req.fromAsset,
+      toAsset: req.toAsset,
+      amountRaw: req.amountRaw,
+    });
+    const sent = parseAmount(req.minReceiveRaw);
+    if (sent !== null) return { key, held: sent, source: "device" };
+    const remembered = await this.floors.get(key);
+    return {
+      key,
+      held: remembered,
+      source: remembered === null ? "none" : "remembered",
+    };
+  }
+
+  /**
+   * Report the held floor on the winning swap quote, never above its own
+   * on-chain minimum, and remember what was reported for the signing
+   * re-quote. One log line per swap quote: the numbers that decide whether
+   * the device accepts it.
+   */
+  private async holdFloor(
+    quote: BridgeQuote,
+    hold: FloorHold | null,
+    route: string,
+  ): Promise<BridgeQuote> {
+    if (!hold || quote.kind !== "swap") return quote;
+    const outRaw = parseAmount(quote.to?.amountRaw);
+    const onChainMin = parseAmount(quote.toAmountMinRaw);
+    if (outRaw === null || onChainMin === null || outRaw === 0n) return quote;
+    // The route-class default both swap adapters quote with.
+    const defaultBps = slippageBpsFor(
+      quote.from.token.symbol,
+      quote.to.token.symbol,
+    );
+    const floor = shownFloor({
+      outRaw,
+      onChainMin,
+      defaultBps,
+      held: hold.held,
+    });
+    await this.floors.set(hold.key, floor);
+    this.logger.log(
+      `[quote] swap floor via ${quote.provider} (${route}): out ${outRaw}, on-chain min ${onChainMin}, held ${hold.held ?? "none"} (${hold.source}), reported ${floor}`,
+    );
+    if (hold.held === null) return quote;
+    return {
+      ...quote,
+      toAmountMinRaw: floor.toString(),
+      slippageBps: declaredSlippageBps(outRaw, floor),
+    };
   }
 
   async status(ref: BridgeRef): Promise<BridgeStatus> {
@@ -670,14 +870,7 @@ export class BridgeService {
     const disabled = this.swapPolicy().disabled;
     const seen = new Set<string>();
     const out: BridgeToken[] = [];
-    const trusted = await this.trustedTokens();
-    const vouch = (token: BridgeToken): BridgeToken => {
-      const parsed = parseCaip19(token.caip19);
-      return parsed?.assetReference &&
-        trusted.has(tokenKey(parsed.chain, parsed.assetReference))
-        ? { ...token, verification: "verified" }
-        : token;
-    };
+    const vouch = await this.voucher();
 
     // An exact asset id: is it a real token on this chain? Any adapter that
     // can read it answers (on-chain metadata for Tower, the token list for
@@ -700,6 +893,384 @@ export class BridgeService {
       }
     }
     return out.slice(0, 8);
+  }
+
+  /**
+   * Marks a token `verified` when we vouch for its exact address on its
+   * chain (Circle's pins, then our Token rows). Everything else keeps the
+   * provider's own verdict; trust is never inherited from a symbol.
+   */
+  private async voucher(): Promise<(token: BridgeToken) => BridgeToken> {
+    const trusted = await this.trustedTokens();
+    return (token) => {
+      const parsed = parseCaip19(token.caip19);
+      return parsed?.assetReference &&
+        trusted.has(tokenKey(parsed.chain, parsed.assetReference))
+        ? { ...token, verification: "verified" }
+        : token;
+    };
+  }
+
+  /**
+   * The providers' token lists for one chain, for a token picker. Comes
+   * from adapters that can enumerate (`listTokens`, presence-checked);
+   * the device merges in the catalogue rows it already holds, the same
+   * two sources `swap_find_token` uses. Vouched tokens first.
+   */
+  async listTokens(chain: Caip2): Promise<BridgeToken[]> {
+    const enabled = await this.enabledChains();
+    if (enabled !== null && !enabled.has(chain)) return [];
+    const disabled = this.swapPolicy().disabled;
+    const vouch = await this.voucher();
+    const seen = new Set<string>();
+    const out: BridgeToken[] = [];
+    for (const adapter of listBridgeAdapters()) {
+      if (!adapter.listTokens || disabled.has(adapter.key)) continue;
+      const found = await adapter.listTokens(chain).catch(() => []);
+      for (const token of found) {
+        const key = token.caip19.toLowerCase();
+        if (seen.has(key) || token.chain !== chain) continue;
+        seen.add(key);
+        out.push(vouch(token));
+      }
+    }
+    const rank = (t: BridgeToken) =>
+      t.isNative ? 0 : t.verification === "verified" ? 1 : 2;
+    return this.withLogos(
+      out
+        .map((token, index) => ({ token, index }))
+        .sort((a, b) => rank(a.token) - rank(b.token) || a.index - b.index)
+        .map(({ token }) => token)
+        .slice(0, TOKEN_LIST_MAX),
+    );
+  }
+
+  /**
+   * The tokens a picker may offer for one route, each one a provider
+   * would actually take, so nobody picks a dead end.
+   *
+   *  - Bridge (`from` ≠ `to`): exact same-asset PAIRS, from each adapter's
+   *    `listRoutablePairs` (App Kit's USDC/EURC pins via the Circle
+   *    adapters first, then LI.FI's `/connections`). Never across tiers.
+   *  - Swap (`from` = `to`): tradable TOKENS, from `listSwapTokens`
+   *    (LI.FI) plus, where a policy-only provider (Tower) serves the chain,
+   *    the preferred tokens we vouch for there, which is all it trades.
+   *
+   * A provider that cannot be checked contributes nothing and marks the
+   * answer `degraded`: an unvalidated token is never offered.
+   */
+  /**
+   * Optional per-chain limit on what the Add funds pickers offer, from
+   * config (`ROUTE_TOKEN_SYMBOLS_BY_CHAIN`, changed without a release):
+   * `<caip2>=<SYM>,<SYM>;<caip2>=…`. Unset by default: every chain offers
+   * whatever a provider validates for the route (unvouched tokens show as
+   * unverified and need the user's confirmation on the quote). Setting it
+   * for a chain limits that chain to the listed symbols, and only at
+   * addresses we vouch for, so a lookalike never qualifies. Example: Arc
+   * mainnet, where LI.FI lists ~40 memecoins (checked 2026-10-09):
+   * `eip155:5042=USDC,EURC,cirBTC`. Picker-only: quotes and the agent's
+   * own swaps are not filtered here.
+   */
+  private limitedChains(): Map<Caip2, Set<string>> {
+    const raw = this.config?.get<string>("ROUTE_TOKEN_SYMBOLS_BY_CHAIN") ?? "";
+    const out = new Map<Caip2, Set<string>>();
+    for (const entry of raw.split(";")) {
+      const [chain, symbols] = entry.split("=").map((v) => v?.trim());
+      if (!chain || !symbols) continue;
+      out.set(
+        chain,
+        new Set(
+          symbols
+            .split(",")
+            .map((v) => v.trim().toUpperCase())
+            .filter((v) => v.length > 0),
+        ),
+      );
+    }
+    return out;
+  }
+
+  async routeTokens(from: Caip2, to: Caip2): Promise<BridgeRouteTokens> {
+    const enabled = await this.enabledChains();
+    const empty = { from, to, pairs: [], tokens: [], degraded: false };
+    if (
+      enabled !== null &&
+      (!enabled.has(from) || !enabled.has(to))
+    ) {
+      return empty;
+    }
+    if (await this.crossesTiers(from, to)) return empty;
+
+    const policy = this.swapPolicy();
+    const kind = from === to ? "swap" : "bridge";
+    const usable = listBridgeAdapters().filter(
+      (a) =>
+        !policy.disabled.has(a.key) &&
+        (!a.kinds || a.kinds.includes(kind)) &&
+        a.supports(from, to),
+    );
+    const vouch = await this.voucher();
+    let degraded = false;
+
+    if (kind === "bridge") {
+      const pairs: BridgeRoutePair[] = [];
+      for (const adapter of usable) {
+        if (!adapter.listRoutablePairs) continue;
+        let found: Array<{ from: BridgeToken; to: BridgeToken }>;
+        try {
+          found = await adapter.listRoutablePairs(from, to);
+        } catch (error: unknown) {
+          degraded = true;
+          const detail = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`[routeTokens] ${adapter.key} unavailable: ${detail}`);
+          continue;
+        }
+        for (const pair of found) {
+          const existing = pairs.find(
+            (p) =>
+              p.from.caip19.toLowerCase() === pair.from.caip19.toLowerCase() &&
+              p.to.caip19.toLowerCase() === pair.to.caip19.toLowerCase(),
+          );
+          if (existing) {
+            if (!existing.providers.includes(adapter.key)) {
+              existing.providers.push(adapter.key);
+            }
+            continue;
+          }
+          pairs.push({
+            from: vouch(pair.from),
+            to: vouch(pair.to),
+            providers: [adapter.key],
+          });
+        }
+      }
+      const offered = pairs
+        .filter(
+          (p) => this.offeredByPolicy(p.from) && this.offeredByPolicy(p.to),
+        )
+        .slice(0, TOKEN_LIST_MAX);
+      const sides = await this.withLogos(
+        offered.flatMap((p) => [p.from, p.to]),
+      );
+      return {
+        ...empty,
+        pairs: offered.map((p, i) => ({
+          ...p,
+          from: sides[i * 2],
+          to: sides[i * 2 + 1],
+        })),
+        degraded,
+      };
+    }
+
+    const tokens: BridgeToken[] = [];
+    const add = (t: BridgeToken) => {
+      if (t.chain !== from) return;
+      if (tokens.some((x) => x.caip19.toLowerCase() === t.caip19.toLowerCase())) {
+        return;
+      }
+      tokens.push(vouch(t));
+    };
+    if (usable.some((a) => policy.policyOnly.has(a.key))) {
+      for (const t of await this.vouchedTokens(from)) {
+        if (policy.symbols.has(t.symbol.toUpperCase())) add(t);
+      }
+    }
+    for (const adapter of usable) {
+      if (!adapter.listSwapTokens || policy.policyOnly.has(adapter.key)) continue;
+      try {
+        for (const t of await adapter.listSwapTokens(from)) add(t);
+      } catch (error: unknown) {
+        degraded = true;
+        const detail = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`[routeTokens] ${adapter.key} unavailable: ${detail}`);
+      }
+    }
+    const offered = tokens
+      .filter((t) => this.offeredByPolicy(t))
+      .slice(0, TOKEN_LIST_MAX);
+    return { ...empty, tokens: await this.withLogos(offered), degraded };
+  }
+
+  /**
+   * Icons for a picker. Order: the provider's own logo, then Alchemy's
+   * token metadata (`alchemy_getTokenMetadata`, the same client and week-
+   * long cache the dApp approval sheet uses), then our catalogue row's
+   * logo (also covers native coins, which have no contract to look up).
+   * Anything still missing renders as its symbol on the device. Lookups
+   * never throw and run a few at a time.
+   */
+  private async withLogos(tokens: BridgeToken[]): Promise<BridgeToken[]> {
+    if (tokens.every((t) => t.logoUri)) return tokens;
+    const catalogue = await this.catalogueLogos();
+    const resolveOne = async (t: BridgeToken): Promise<BridgeToken> => {
+      if (t.logoUri) return t;
+      let logo: string | null = null;
+      // Native-ness by the ASSET ID, not `isNative`: Circle flags Arc's
+      // ERC-20 USDC (0x3600…) native because Arc's gas coin is USDC, and
+      // that made it wear the Arc chain icon instead of USDC's.
+      const native = isNativeAsset(t.caip19);
+      const parsed = parseCaip2(t.chain);
+      const chainId =
+        parsed?.namespace === "eip155" ? Number(parsed.reference) : Number.NaN;
+      if (!native && Number.isInteger(chainId) && this.tokenMetadata) {
+        logo = (await this.tokenMetadata.getIdentity(chainId, t.address)).logo;
+      }
+      logo ??=
+        catalogue.get(
+          native ? `${t.chain}|native` : tokenKey(t.chain, t.address),
+        ) ?? null;
+      // An icon is the asset's face, not the deployment's: a token we vouch
+      // for at this exact address may wear the icon our catalogue holds for
+      // the same symbol on another chain (Circle's EURC on Base Sepolia has
+      // no Alchemy logo, while our Arc row has one). Never for an unvouched
+      // token, so a lookalike cannot borrow a real asset's face.
+      if (!logo && !native && t.verification === "verified") {
+        logo = catalogue.get(`symbol|${t.symbol.toUpperCase()}`) ?? null;
+      }
+      return logo ? { ...t, logoUri: logo } : t;
+    };
+    const out: BridgeToken[] = new Array(tokens.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < tokens.length) {
+        const i = next++;
+        out[i] = await resolveOne(tokens[i]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(LOGO_LOOKUP_CONCURRENCY, tokens.length) }, worker),
+    );
+    return out;
+  }
+
+  /** Catalogue logos by token key (and `${chain}|native`), cached briefly. */
+  private async catalogueLogos(): Promise<Map<string, string>> {
+    const cached = this.catalogueLogosCache;
+    if (cached && Date.now() - cached.at < TRUSTED_TOKENS_TTL_MS) {
+      return cached.logos;
+    }
+    const logos = new Map<string, string>();
+    if (!this.prisma) return logos;
+    try {
+      const rows = await this.prisma.token.findMany({
+        where: { isActive: true, logoUrl: { not: null } },
+        select: {
+          contractAddress: true,
+          isNativeCurrency: true,
+          symbol: true,
+          logoUrl: true,
+          blockchain: {
+            select: { chainId: true, chainSlug: true, type: true, name: true },
+          },
+        },
+      });
+      for (const row of rows) {
+        const caip2 = buildCaip2Id(row.blockchain as unknown as TBlockchainRow);
+        if (!caip2 || !row.logoUrl) continue;
+        if (row.isNativeCurrency) logos.set(`${caip2}|native`, row.logoUrl);
+        if (row.contractAddress && !row.isNativeCurrency) {
+          logos.set(tokenKey(caip2, row.contractAddress), row.logoUrl);
+          const bySymbol = `symbol|${row.symbol.toUpperCase()}`;
+          if (!logos.has(bySymbol)) logos.set(bySymbol, row.logoUrl);
+        }
+      }
+      this.catalogueLogosCache = { at: Date.now(), logos };
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[catalogueLogos] row read failed: ${detail}`);
+    }
+    return logos;
+  }
+
+  private offeredByPolicy(token: BridgeToken): boolean {
+    const allowed = this.limitedChains().get(token.chain);
+    if (!allowed) return true;
+    return (
+      allowed.has(token.symbol.toUpperCase()) &&
+      token.verification === "verified"
+    );
+  }
+
+  /** Our catalogue rows on one chain as route tokens (we vouch for them). */
+  private async vouchedTokens(chain: Caip2): Promise<BridgeToken[]> {
+    if (!this.prisma) return [];
+    try {
+      const rows = await this.prisma.token.findMany({
+        where: {
+          isActive: true,
+          isNativeCurrency: false,
+          contractAddress: { not: null },
+          blockchain: { isActive: true },
+        },
+        select: {
+          contractAddress: true,
+          symbol: true,
+          name: true,
+          decimals: true,
+          logoUrl: true,
+          blockchain: {
+            select: { chainId: true, chainSlug: true, type: true, name: true },
+          },
+        },
+      });
+      return rows
+        .filter(
+          (r) =>
+            r.contractAddress &&
+            buildCaip2Id(r.blockchain as unknown as TBlockchainRow) === chain,
+        )
+        .map((r) => ({
+          caip19: lifiTokenToCaip19(chain, r.contractAddress as string),
+          chain,
+          address: r.contractAddress as string,
+          symbol: r.symbol,
+          name: r.name,
+          decimals: r.decimals,
+          logoUri: r.logoUrl ?? undefined,
+          isNative: false,
+          verification: "verified" as const,
+        }));
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[vouchedTokens] row read failed: ${detail}`);
+      return [];
+    }
+  }
+
+  /**
+   * What a wallet on `from` can do from there: whether any provider swaps
+   * on that chain, and which chains it can bridge to. A destination must
+   * be one of our enabled chains AND served from `from` by a provider that
+   * is not switched off: a provider reaching a chain in isolation is not a
+   * route. This is the list a bridge picker offers, so a user can never
+   * pick a pair nothing can move. The quote remains the final word on a
+   * specific asset and amount.
+   */
+  async reach(from: Caip2): Promise<BridgeReach> {
+    const enabled = await this.enabledChains();
+    if (enabled !== null && !enabled.has(from)) {
+      return { chain: from, swap: false, destinations: [], degraded: false };
+    }
+    const support = await this.getSupport();
+    const disabled = this.swapPolicy().disabled;
+    const usable = listBridgeAdapters().filter((a) => !disabled.has(a.key));
+    const serves = (kind: "swap" | "bridge", to: Caip2) =>
+      usable.some(
+        (a) => (!a.kinds || a.kinds.includes(kind)) && a.supports(from, to),
+      );
+    const destinations: BridgeSupportedChain[] = [];
+    for (const row of support.chains) {
+      if (row.chain === from || !serves("bridge", row.chain)) continue;
+      if (await this.crossesTiers(from, row.chain)) continue;
+      destinations.push(row);
+    }
+    return {
+      chain: from,
+      swap: serves("swap", from),
+      destinations,
+      degraded: support.degraded,
+    };
   }
 
   /** Token metadata (symbol + DECIMALS) for a CAIP-19, via any adapter. */

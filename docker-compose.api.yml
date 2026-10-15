@@ -118,6 +118,18 @@ services:
       DEFILLAMA_API_URL: ${DEFILLAMA_API_URL:-https://api.llama.fi}
       DEFILLAMA_PRO_URL: ${DEFILLAMA_PRO_URL:-https://pro-api.llama.fi}
       LIFI_API_URL: ${LIFI_API_URL:-https://li.quest/v1}
+      # Tower Exchange — same-chain swaps on Arc (src/bridge/providers/tower.adapter.ts).
+      # Without TOWER_API_KEY, Tower is never a candidate and LI.FI serves Arc swaps.
+      TOWER_API_KEY: ${TOWER_API_KEY}
+      TOWER_API_URL: ${TOWER_API_URL}
+      TOWER_EXECUTORS_5042: ${TOWER_EXECUTORS_5042}
+      TOWER_EXECUTORS_5042002: ${TOWER_EXECUTORS_5042002}
+      # Swap routing policy (bridge.service.ts swapPolicy). `-` not `:-`: the
+      # code treats a set-but-empty value as "empty list", same as here.
+      SWAP_PREFERRED_SYMBOLS: ${SWAP_PREFERRED_SYMBOLS-USDC,EURC,cirBTC}
+      SWAP_PREFERRED_PROVIDERS: ${SWAP_PREFERRED_PROVIDERS-tower,lifi}
+      ROUTE_POLICY_ONLY_PROVIDERS: ${ROUTE_POLICY_ONLY_PROVIDERS-tower}
+      DISABLED_ROUTE_PROVIDERS: ${DISABLED_ROUTE_PROVIDERS}
       ZERION_API_URL: ${ZERION_API_URL:-https://api.zerion.io/v1}
       DEBANK_API_URL: ${DEBANK_API_URL:-https://api.cloud.debank.com/v1}
       # DeFi Strategies — worker toggles & budgets

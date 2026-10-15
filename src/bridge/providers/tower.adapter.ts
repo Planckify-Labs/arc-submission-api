@@ -35,6 +35,7 @@ import { DefiError } from "../../strategies/errors/defi-error";
 import { findChainById } from "../../strategies/targets/chain-directory";
 import { getPublicClientForChain } from "../../strategies/targets/rpc";
 import { buildCaip19, parseCaip19 } from "../caip";
+import { effectiveSlippageBps } from "../slippage";
 import type { BridgeRouteAdapter } from "../registry";
 import type {
   BridgeFee,
@@ -153,6 +154,12 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
         new Set(list.filter((a) => isAddress(a)).map((a) => a.toLowerCase())),
       );
     }
+    const key = this.configService.get<string>("TOWER_API_KEY") || "";
+    if (key) {
+      this.logger.log(`Tower swaps enabled (key ${key.slice(0, 8)}…)`);
+    } else {
+      this.logger.warn("Tower swaps disabled: TOWER_API_KEY is not set");
+    }
   }
 
   // ── capability seam ───────────────────────────────────────────────────
@@ -201,8 +208,10 @@ export class TowerSwapAdapter implements BridgeRouteAdapter {
     if (amountRaw === 0n) {
       throw new DefiError("unsupported_asset", "amount rounds to zero");
     }
-    const slippageBps =
-      req.slippageBps ?? slippageBpsFor(from.token.symbol, to.token.symbol);
+    const slippageBps = effectiveSlippageBps(
+      slippageBpsFor(from.token.symbol, to.token.symbol),
+      req,
+    );
 
     const { quote, built } = await this.quoteAndBuild({
       chainId: arc.chainId,

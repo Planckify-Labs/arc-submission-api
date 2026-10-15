@@ -355,6 +355,18 @@ export class CircleCctpAdapter implements BridgeRouteAdapter {
     return [];
   }
 
+  /** USDC to USDC, wherever this adapter has a route (App Kit's pins). */
+  async listRoutablePairs(
+    from: Caip2,
+    to: Caip2,
+  ): Promise<Array<{ from: BridgeToken; to: BridgeToken }>> {
+    const route = this.route(from, to);
+    if (!route) return [];
+    return [
+      { from: this.usdc(route.source), to: this.usdc(route.destination) },
+    ];
+  }
+
   async resolveToken(asset: Caip19): Promise<BridgeToken | null> {
     const chain = parseCaip19(asset)?.chain;
     if (!chain) return null;

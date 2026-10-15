@@ -21,9 +21,11 @@ import {
   createConfig,
   type ExtendedChain,
   getChains,
+  getConnections,
   getQuote,
   getStatus,
   getToken,
+  getTokens,
   getTools,
   type LiFiStep,
   type StatusResponse,
@@ -31,6 +33,7 @@ import {
 import { randomUUID } from "crypto";
 import { DefiError } from "../../strategies/errors/defi-error";
 import { isNativeAsset, parseCaip2, parseCaip19 } from "../caip";
+import { effectiveSlippageBps } from "../slippage";
 import type { BridgeRouteAdapter } from "../registry";
 import type {
   BridgeExecutionPayload,
@@ -105,12 +108,35 @@ export function lifiPriceImpactPercent(estimate: {
   return Math.max(0, ((from - to) / from) * 100);
 }
 
+/**
+ * LI.FI marks scam / impersonation tokens `flagged` in a REST field its
+ * published types do not declare, so it is read defensively.
+ */
+function isLifiFlagged(token: object): boolean {
+  const raw = (token as { verificationStatus?: unknown }).verificationStatus;
+  return typeof raw === "string" && raw.toLowerCase() === "flagged";
+}
+
+/** How long a chain's LI.FI token list is served from memory. */
+const TOKEN_LIST_TTL_MS = 60 * 60 * 1000;
+/** Tokens kept per chain for the picker; search covers the long tail. */
+const TOKEN_LIST_LIMIT = 60;
+
 @Injectable()
 export class LifiBridgeAdapter implements BridgeRouteAdapter {
   readonly key = "lifi";
   readonly kinds = ["swap", "bridge"] as const;
 
   private readonly logger = new Logger(LifiBridgeAdapter.name);
+  private readonly tokenListCache = new Map<
+    Caip2,
+    { at: number; tokens: BridgeToken[] }
+  >();
+  /** `from|to` → the token addresses LI.FI connects (lowercased). */
+  private readonly connectionsCache = new Map<
+    string,
+    { at: number; from: Set<string>; to: Set<string> }
+  >();
   private readonly integrator: string;
   private readonly apiKey: string;
   /**
@@ -196,7 +222,10 @@ export class LifiBridgeAdapter implements BridgeRouteAdapter {
 
     const slippageBps =
       req.slippageBps ??
-      (await this.defaultSlippageBps(req.fromAsset, req.toAsset));
+      effectiveSlippageBps(
+        await this.defaultSlippageBps(req.fromAsset, req.toAsset),
+        req,
+      );
 
     let step: LiFiStep;
     try {
@@ -527,6 +556,113 @@ export class LifiBridgeAdapter implements BridgeRouteAdapter {
       this.logger.warn(`[resolveToken] LI.FI error for ${asset}: ${detail}`);
       return null;
     }
+  }
+
+  /**
+   * The chain's token list as LI.FI offers it, for a token picker (the
+   * optional `listTokens` capability). Most traded first (24h volume;
+   * LI.FI's market-cap figures were live-checked 2026-10-09 as unusable,
+   * one token claiming ~$4.7 quadrillion), capped, and cached per chain:
+   * the list moves slowly and opening a picker must not cost a provider
+   * round trip each time. Tokens LI.FI itself flags are left out of the
+   * list entirely; a pasted address still resolves through search, where
+   * an unvouched token needs the user's confirmation before it signs. A
+   * failed refresh serves the last good list rather than an empty picker.
+   */
+  async listTokens(chain: Caip2): Promise<BridgeToken[]> {
+    const chainId = caip2ToLifiChainId(chain);
+    if (chainId === null) return [];
+    const cached = this.tokenListCache.get(chain);
+    if (cached && Date.now() - cached.at < TOKEN_LIST_TTL_MS) {
+      return cached.tokens;
+    }
+    try {
+      const response = await getTokens({
+        chains: [chainId],
+        orderBy: "volumeUSD24H",
+        limit: TOKEN_LIST_LIMIT,
+      });
+      const tokens = (response.tokens[chainId] ?? [])
+        .filter((token) => !isLifiFlagged(token))
+        .slice(0, TOKEN_LIST_LIMIT)
+        .map((token) => toBridgeToken(chain, token));
+      this.tokenListCache.set(chain, { at: Date.now(), tokens });
+      return tokens;
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[listTokens] LI.FI list failed for ${chain}: ${detail}`);
+      return cached?.tokens ?? [];
+    }
+  }
+
+  /**
+   * Which tokens LI.FI can actually move between two chains (its
+   * `/connections`, live-checked 2026-10-09: Base Sepolia → Arbitrum
+   * mainnet has none, Base Sepolia → Arbitrum Sepolia has a handful).
+   * Addresses only; metadata comes from `listTokens`. Cached per route.
+   * Throws when LI.FI cannot be reached, so callers fail closed.
+   */
+  private async connections(
+    fromId: number,
+    toId: number,
+  ): Promise<{ from: Set<string>; to: Set<string> }> {
+    const key = `${fromId}|${toId}`;
+    const cached = this.connectionsCache.get(key);
+    if (cached && Date.now() - cached.at < TOKEN_LIST_TTL_MS) return cached;
+    // One retry: a single dropped request should not mark the whole
+    // picker "couldn't be checked".
+    const res = await getConnections({ fromChain: fromId, toChain: toId }).catch(
+      () => getConnections({ fromChain: fromId, toChain: toId }),
+    );
+    const from = new Set<string>();
+    const to = new Set<string>();
+    for (const c of res.connections ?? []) {
+      for (const t of c.fromTokens ?? []) from.add(t.address.toLowerCase());
+      for (const t of c.toTokens ?? []) to.add(t.address.toLowerCase());
+    }
+    const entry = { at: Date.now(), from, to };
+    this.connectionsCache.set(key, entry);
+    return entry;
+  }
+
+  /** Same-asset pairs LI.FI connects from `from` to `to`. */
+  async listRoutablePairs(
+    from: Caip2,
+    to: Caip2,
+  ): Promise<Array<{ from: BridgeToken; to: BridgeToken }>> {
+    const fromId = caip2ToLifiChainId(from);
+    const toId = caip2ToLifiChainId(to);
+    if (fromId === null || toId === null || from === to) return [];
+    const [links, fromList, toList] = await Promise.all([
+      this.connections(fromId as number, toId as number),
+      this.listTokens(from),
+      this.listTokens(to),
+    ]);
+    const pairs: Array<{ from: BridgeToken; to: BridgeToken }> = [];
+    for (const f of fromList) {
+      if (!links.from.has(f.address.toLowerCase())) continue;
+      const match = toList.find(
+        (t) =>
+          t.isNative === f.isNative &&
+          t.symbol.toUpperCase() === f.symbol.toUpperCase() &&
+          links.to.has(t.address.toLowerCase()),
+      );
+      if (match) pairs.push({ from: f, to: match });
+    }
+    return pairs;
+  }
+
+  /** Tokens LI.FI can trade on one chain. */
+  async listSwapTokens(chain: Caip2): Promise<BridgeToken[]> {
+    const id = caip2ToLifiChainId(chain);
+    if (id === null) return [];
+    const [links, list] = await Promise.all([
+      this.connections(id as number, id as number),
+      this.listTokens(chain),
+    ]);
+    return list.filter(
+      (t) => links.from.has(t.address.toLowerCase()) && links.to.has(t.address.toLowerCase()),
+    );
   }
 
   /**

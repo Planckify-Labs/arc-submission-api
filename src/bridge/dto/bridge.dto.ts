@@ -100,6 +100,15 @@ export class BridgeQuoteDto {
   @Matches(CHAIN_ADDRESS)
   @MaxLength(128)
   toAddress: string;
+
+  @ApiPropertyOptional({
+    description:
+      "The minimum the user approved, in the destination token's smallest unit. Execute-time re-quotes send it so the route can be held to it; slippage is only ever tightened, never loosened.",
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(AMOUNT_RAW)
+  minReceiveRaw?: string;
 }
 
 export class BridgeTokenSearchQueryDto {
@@ -183,4 +192,33 @@ export class BridgeGasTopUpDto {
   @IsInt()
   @Min(1)
   amountUsd: number;
+}
+
+export class BridgeReachQueryDto {
+  @ApiProperty({ description: "Source chain, CAIP-2.", example: "eip155:8453" })
+  @IsString()
+  @Matches(CAIP2)
+  from: string;
+}
+
+export class BridgeTokenListQueryDto {
+  @ApiProperty({ description: "Chain to list, CAIP-2.", example: "eip155:8453" })
+  @IsString()
+  @Matches(CAIP2)
+  chain: string;
+}
+
+export class BridgeRouteTokensQueryDto {
+  @ApiProperty({ description: "Source chain, CAIP-2.", example: "eip155:84532" })
+  @IsString()
+  @Matches(CAIP2)
+  from: string;
+
+  @ApiProperty({
+    description: "Destination chain, CAIP-2. Same as `from` for a swap.",
+    example: "eip155:5042002",
+  })
+  @IsString()
+  @Matches(CAIP2)
+  to: string;
 }

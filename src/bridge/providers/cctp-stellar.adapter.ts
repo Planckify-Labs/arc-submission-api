@@ -748,6 +748,20 @@ export class CctpStellarAdapter implements BridgeRouteAdapter {
     return [];
   }
 
+  /** USDC between an EVM chain and Stellar, in the direction asked. */
+  async listRoutablePairs(
+    from: Caip2,
+    to: Caip2,
+  ): Promise<Array<{ from: BridgeToken; to: BridgeToken }>> {
+    const dir = this.direction(from, to);
+    if (!dir) return [];
+    const evm = this.evmUsdc(dir.evm);
+    const stellar = this.stellarUsdcToken(dir.network);
+    return dir.kind === "inbound"
+      ? [{ from: evm, to: stellar }]
+      : [{ from: stellar, to: evm }];
+  }
+
   async resolveToken(asset: Caip19): Promise<BridgeToken | null> {
     const parsed = parseCaip19(asset);
     if (!parsed) return null;
