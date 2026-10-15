@@ -1,6 +1,7 @@
 import { ConfigService } from "@nestjs/config";
 import { DefiError } from "../../strategies/errors/defi-error";
 import { getPublicClientForChain } from "../../strategies/targets/rpc";
+import type { ValkeyService } from "../../valkey/valkey.service";
 import { BridgeService } from "../bridge.service";
 import { registerBridgeAdapter, resetBridgeAdapters } from "../registry";
 import type { BridgeQuoteRequest } from "../types";
@@ -92,10 +93,32 @@ function mockFetch(replies: Reply[]) {
   return calls;
 }
 
-function adapter(env: Record<string, string> = { TOWER_API_KEY: "sk_test_x" }) {
-  return new TowerSwapAdapter({
-    get: (k: string) => env[k],
-  } as unknown as ConfigService);
+function adapter(
+  env: Record<string, string> = { TOWER_API_KEY: "sk_test_x" },
+  valkey?: ValkeyService,
+) {
+  return new TowerSwapAdapter(
+    { get: (k: string) => env[k] } as unknown as ConfigService,
+    valkey,
+  );
+}
+
+/** ValkeyService's get/set contract: JSON in, JSON.parse out. */
+function fakeValkey(opts: { failing?: boolean } = {}) {
+  const rows = new Map<string, string>();
+  return {
+    rows,
+    get: jest.fn((k: string) => {
+      if (opts.failing) return Promise.reject(new Error("valkey down"));
+      const v = rows.get(k);
+      return Promise.resolve(v === undefined ? null : JSON.parse(v));
+    }),
+    set: jest.fn((k: string, v: unknown) => {
+      if (opts.failing) return Promise.reject(new Error("valkey down"));
+      rows.set(k, JSON.stringify(v));
+      return Promise.resolve(true);
+    }),
+  } as unknown as ValkeyService & { rows: Map<string, string> };
 }
 
 function request(over: Partial<BridgeQuoteRequest> = {}): BridgeQuoteRequest {
@@ -308,6 +331,108 @@ describe("TowerSwapAdapter", () => {
         ),
         "unsupported_asset",
       );
+    });
+
+  });
+
+  // Live Arc mainnet numbers (2026-10-15): two quotes seconds apart came
+  // back 889052 then 889051. At the same 30 bps the second floor is one
+  // unit under the first, and the device refused the swap as stale.
+  describe("held floor across the card quote and the signing re-quote", () => {
+    const card = () =>
+      towerQuote({ outputAmountRaw: "889052", minOutRaw: "886384" });
+
+    function quoteCard(valkey: ValkeyService) {
+      mockFetch([
+        { body: { success: true, data: card() } },
+        { body: { success: true, data: towerBuild() } },
+      ]);
+      return adapter(undefined, valkey).quote(request());
+    }
+
+    function signingQuote(
+      outputAmountRaw: string,
+      minOutRaw: string,
+      inputAmountRaw = "1000000",
+    ) {
+      return mockFetch([
+        {
+          body: {
+            success: true,
+            data: towerQuote({ outputAmountRaw, minOutRaw, inputAmountRaw }),
+          },
+        },
+        { body: { success: true, data: towerBuild() } },
+      ]);
+    }
+
+    it("holds the card's floor through a one-unit tick down (5.25 sends no minReceiveRaw)", async () => {
+      const valkey = fakeValkey();
+      const shown = await quoteCard(valkey);
+      expect(shown.toAmountMinRaw).toBe("886384");
+      expect(shown.slippageBps).toBe(30);
+
+      // On-chain minimum at 15 bps for 889051.
+      const calls = signingQuote("889051", "887717");
+      const fresh = await adapter(undefined, valkey).quote(request());
+
+      expect(calls[0].body.slippageTolerance).toBe(15);
+      expect(BigInt(fresh.toAmountMinRaw)).toBeGreaterThanOrEqual(
+        BigInt(shown.toAmountMinRaw),
+      );
+      expect(fresh.toAmountMinRaw).toBe("886384");
+      // The device's floor check: out × (1 − bps) must not exceed the floor.
+      const out = BigInt(fresh.to.amountRaw);
+      expect(
+        (out * BigInt(10_000 - fresh.slippageBps)) / 10_000n,
+      ).toBeLessThanOrEqual(BigInt(fresh.toAmountMinRaw) + 1n);
+    });
+
+    it("raises the floor when the price improved", async () => {
+      const valkey = fakeValkey();
+      await quoteCard(valkey);
+      signingQuote("890000", "888665");
+      const fresh = await adapter(undefined, valkey).quote(request());
+      // 890000 × 0.997, above the held 886384 and below the on-chain 888665.
+      expect(fresh.toAmountMinRaw).toBe("887330");
+    });
+
+    it("reports a fresh, lower floor when the price fell past the headroom", async () => {
+      const valkey = fakeValkey();
+      await quoteCard(valkey);
+      signingQuote("887000", "885669");
+      const fresh = await adapter(undefined, valkey).quote(request());
+      // Below the held floor, so the device refuses it as stale.
+      expect(fresh.toAmountMinRaw).toBe("884339");
+    });
+
+    it("uses the device's minReceiveRaw when it sends one", async () => {
+      const calls = signingQuote("889051", "887717");
+      const fresh = await adapter(undefined, fakeValkey()).quote(
+        request({ minReceiveRaw: "886384" }),
+      );
+      expect(calls[0].body.slippageTolerance).toBe(15);
+      expect(fresh.toAmountMinRaw).toBe("886384");
+    });
+
+    it("keeps different amounts apart", async () => {
+      const valkey = fakeValkey();
+      await quoteCard(valkey);
+      const calls = signingQuote("1778100", "1772766", "2000000");
+      await adapter(undefined, valkey).quote(request({ amountRaw: "2000000" }));
+      expect(calls[0].body.slippageTolerance).toBe(30);
+    });
+
+    it("quotes as before when Valkey is down", async () => {
+      const calls = mockFetch([
+        { body: { success: true, data: card() } },
+        { body: { success: true, data: towerBuild() } },
+      ]);
+      const q = await adapter(undefined, fakeValkey({ failing: true })).quote(
+        request(),
+      );
+      expect(calls[0].body.slippageTolerance).toBe(30);
+      expect(q.toAmountMinRaw).toBe("886384");
     });
   });
 
