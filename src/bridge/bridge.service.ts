@@ -17,6 +17,7 @@ import { AlchemyPricesClient } from "../strategies/external/alchemy-prices.clien
 import { DefiError } from "../strategies/errors/defi-error";
 import { ValkeyService } from "../valkey/valkey.service";
 import { chainOfAsset, isNativeAsset, parseCaip2, parseCaip19 } from "./caip";
+import { type FloorBinding, FloorTokenSigner } from "./floor-token";
 import { HeldFloorStore, declaredSlippageBps, shownFloor } from "./held-floor";
 import { CircleAppKitClient } from "./providers/circle/app-kit.client";
 import { caip2ForCircleChain } from "./providers/circle/circle-route";
@@ -78,11 +79,21 @@ function parseAmount(v: string | undefined): bigint | null {
   return v && /^[0-9]+$/.test(v) ? BigInt(v) : null;
 }
 
-/** The floor a same-chain swap quote is held to (see held-floor.ts). */
+/**
+ * The floor a same-chain swap quote is held to (see held-floor.ts).
+ *
+ * `card` is the quote the user approves: held to nothing, it gets a
+ * `floorToken`. `execute` is the signing re-quote, held to the token's
+ * floor (or the device's). `legacy` is a device that sends no `purpose`
+ * (5.26.x and older): either quote may be the signing one, so it is held
+ * to the device's floor or the one remembered in Valkey.
+ */
 interface FloorHold {
+  mode: "card" | "execute" | "legacy";
+  binding: FloorBinding;
   key: string;
   held: bigint | null;
-  source: "device" | "remembered" | "none";
+  source: "token" | "device" | "remembered" | "none";
 }
 
 /** How long the trusted-token set is reused. Issuer pins change by release. */
@@ -121,6 +132,8 @@ export class BridgeService {
     null;
   /** Swap floors held across the card quote and the signing re-quote. */
   private readonly floors: HeldFloorStore;
+  /** Signs the card quote's floor; `null` when no secret is configured. */
+  private readonly floorTokens: FloorTokenSigner | null;
 
   constructor(
     @Optional() private readonly prisma?: PrismaService,
@@ -131,6 +144,9 @@ export class BridgeService {
     @Optional() valkey?: ValkeyService,
   ) {
     this.floors = new HeldFloorStore(valkey);
+    this.floorTokens = FloorTokenSigner.fromConfig((k) =>
+      this.config?.get<string>(k),
+    );
   }
 
   /**
@@ -734,26 +750,66 @@ export class BridgeService {
   }
 
   /**
-   * The floor to hold for a same-chain swap: the device's `minReceiveRaw`
-   * (5.26+), else the one this server last reported for the same wallet,
-   * pair and amount (5.25.x sends none). `null` for a bridge, or when an
-   * internal caller pins the slippage.
+   * The floor to hold for a same-chain swap. `null` for a bridge, or when
+   * an internal caller pins the slippage.
+   *
+   *  - `purpose: "quote"`: nothing; the reported floor is signed instead.
+   *  - `purpose: "execute"`: the `floorToken`'s floor, else the device's
+   *    `minReceiveRaw`.
+   *  - no purpose (5.26.x and older): the device's `minReceiveRaw` (5.26),
+   *    else the one this server last reported for the same wallet, pair
+   *    and amount (5.25.x sends none).
    */
   private async floorHold(req: BridgeQuoteRequest): Promise<FloorHold | null> {
     if (req.fromChain !== req.toChain || req.slippageBps !== undefined) {
       return null;
     }
-    const key = this.floors.key({
+    const binding: FloorBinding = {
       chain: req.fromChain,
       wallet: req.fromAddress,
       fromAsset: req.fromAsset,
       toAsset: req.toAsset,
       amountRaw: req.amountRaw,
-    });
+    };
+    const key = this.floors.key(binding);
     const sent = parseAmount(req.minReceiveRaw);
-    if (sent !== null) return { key, held: sent, source: "device" };
+
+    if (req.purpose === "quote") {
+      return { mode: "card", binding, key, held: null, source: "none" };
+    }
+    if (req.purpose === "execute") {
+      const signed =
+        req.floorToken && this.floorTokens
+          ? this.floorTokens.verify(req.floorToken, binding)
+          : null;
+      if (req.floorToken && signed === null) {
+        // Expired, for another swap, or signed under a rotated secret.
+        this.logger.warn(
+          `[quote] floor token not accepted for ${req.fromAsset} -> ${req.toAsset}; using the device's floor`,
+        );
+      }
+      if (signed !== null) {
+        // The device checks against its own number, so hold whichever is
+        // higher: holding less than it checks would refuse the swap.
+        const held = sent !== null && sent > signed ? sent : signed;
+        return { mode: "execute", binding, key, held, source: "token" };
+      }
+      return {
+        mode: "execute",
+        binding,
+        key,
+        held: sent,
+        source: sent === null ? "none" : "device",
+      };
+    }
+
+    if (sent !== null) {
+      return { mode: "legacy", binding, key, held: sent, source: "device" };
+    }
     const remembered = await this.floors.get(key);
     return {
+      mode: "legacy",
+      binding,
       key,
       held: remembered,
       source: remembered === null ? "none" : "remembered",
@@ -762,9 +818,10 @@ export class BridgeService {
 
   /**
    * Report the held floor on the winning swap quote, never above its own
-   * on-chain minimum, and remember what was reported for the signing
-   * re-quote. One log line per swap quote: the numbers that decide whether
-   * the device accepts it.
+   * on-chain minimum. A card quote gets the reported floor signed as its
+   * `floorToken`; a legacy quote has it remembered in Valkey instead. One
+   * log line per swap quote: the numbers that decide whether the device
+   * accepts it.
    */
   private async holdFloor(
     quote: BridgeQuote,
@@ -786,16 +843,22 @@ export class BridgeService {
       defaultBps,
       held: hold.held,
     });
-    await this.floors.set(hold.key, floor);
+    if (hold.mode === "legacy") await this.floors.set(hold.key, floor);
     this.logger.log(
-      `[quote] swap floor via ${quote.provider} (${route}): out ${outRaw}, on-chain min ${onChainMin}, held ${hold.held ?? "none"} (${hold.source}), reported ${floor}`,
+      `[quote] swap floor via ${quote.provider} (${route}, ${hold.mode}): out ${outRaw}, on-chain min ${onChainMin}, held ${hold.held ?? "none"} (${hold.source}), reported ${floor}`,
     );
-    if (hold.held === null) return quote;
-    return {
-      ...quote,
-      toAmountMinRaw: floor.toString(),
-      slippageBps: declaredSlippageBps(outRaw, floor),
-    };
+    const reported: BridgeQuote =
+      hold.held === null
+        ? quote
+        : {
+            ...quote,
+            toAmountMinRaw: floor.toString(),
+            slippageBps: declaredSlippageBps(outRaw, floor),
+          };
+    if (hold.mode === "card" && this.floorTokens) {
+      return { ...reported, floorToken: this.floorTokens.sign(hold.binding, floor) };
+    }
+    return reported;
   }
 
   async status(ref: BridgeRef): Promise<BridgeStatus> {

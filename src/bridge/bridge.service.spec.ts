@@ -851,15 +851,16 @@ describe("BridgeService held swap floor (card quote → signing re-quote)", () =
     };
   }
 
-  const service = (valkey?: never) =>
+  const service = (valkey?: never, env: Record<string, string> = {}) =>
     new BridgeService(
       undefined,
       undefined,
-      undefined,
+      { get: (k: string) => env[k] } as never,
       undefined,
       undefined,
       valkey,
     );
+  const signed = { SWAP_FLOOR_TOKEN_SECRET: "test-secret" };
 
   function floorIn(r: Awaited<ReturnType<BridgeService["quote"]>>): bigint {
     if (!r.routable) throw new Error("not routable");
@@ -924,6 +925,65 @@ describe("BridgeService held swap floor (card quote → signing re-quote)", () =
     await svc.quote(bridge);
     await svc.quote(bridge);
     expect(lifi.quote.mock.calls[1][0]).not.toHaveProperty("minReceiveRaw");
+  });
+
+  it("holds the signed card floor on an explicit execute re-quote", async () => {
+    const lifi = swapper("lifi", [889052n, 889051n]);
+    registerBridgeAdapter(lifi as never);
+    const valkey = fakeValkey();
+    const svc = service(valkey, signed);
+
+    const card = await svc.quote({ ...req, purpose: "quote" });
+    if (!card.routable) throw new Error("not routable");
+    expect(card.quote.floorToken).toEqual(expect.any(String));
+    // The card is built at the default slippage, untightened.
+    expect(lifi.quote.mock.calls[0][0]).not.toHaveProperty("minReceiveRaw");
+
+    const signing = await svc.quote({
+      ...req,
+      purpose: "execute",
+      floorToken: card.quote.floorToken,
+    });
+    expect(lifi.quote.mock.calls[1][0]).toMatchObject({
+      minReceiveRaw: "886384",
+    });
+    expect(floorIn(signing)).toBe(886384n);
+    if (signing.routable) expect(signing.quote.floorToken).toBeUndefined();
+    // The token replaces the Valkey guess for these devices.
+    expect((valkey as { set: jest.Mock }).set).not.toHaveBeenCalled();
+  });
+
+  it("never tightens a card quote, even with a remembered floor", async () => {
+    const lifi = swapper("lifi", [889052n, 889051n]);
+    registerBridgeAdapter(lifi as never);
+    const svc = service(fakeValkey(), signed);
+    await svc.quote(req); // a 5.25 card leaves a floor in Valkey
+    await svc.quote({ ...req, purpose: "quote" });
+    expect(lifi.quote.mock.calls[1][0]).not.toHaveProperty("minReceiveRaw");
+  });
+
+  it("falls back to the device's floor when the token is not for this swap", async () => {
+    const lifi = swapper("lifi", [889052n, 889051n]);
+    registerBridgeAdapter(lifi as never);
+    const svc = service(undefined, signed);
+    const card = await svc.quote({ ...req, purpose: "quote" });
+    if (!card.routable) throw new Error("not routable");
+    const signing = await svc.quote({
+      ...req,
+      amountRaw: "999999",
+      purpose: "execute",
+      floorToken: card.quote.floorToken,
+      minReceiveRaw: "886000",
+    });
+    expect(lifi.quote.mock.calls[1][0]).toMatchObject({ minReceiveRaw: "886000" });
+    // Raised to the default-slippage floor: the price is above the held one.
+    expect(floorIn(signing)).toBe(886383n);
+  });
+
+  it("issues no token without a secret", async () => {
+    registerBridgeAdapter(swapper("lifi", [889052n]) as never);
+    const card = await service().quote({ ...req, purpose: "quote" });
+    if (card.routable) expect(card.quote.floorToken).toBeUndefined();
   });
 
   it("quotes as before when Valkey is down", async () => {

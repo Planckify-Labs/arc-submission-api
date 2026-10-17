@@ -8,10 +8,13 @@
  * expected output fails the swap. Tower's and LI.FI's Arc quotes both
  * jitter by a raw unit or two between calls.
  *
- * Devices from 5.26 send the card's floor as `minReceiveRaw` and the server
- * tightens slippage to hold it (`effectiveSlippageBps`). Earlier builds do
- * not send it, so the server remembers the floor it last showed for the
- * same wallet, pair and amount and uses that instead.
+ * Devices from 5.27 mark each quote with a `purpose` and carry the card's
+ * floor back as a signed `floorToken` (floor-token.ts). 5.26 sends the
+ * card's floor as `minReceiveRaw` and the server tightens slippage to hold
+ * it (`effectiveSlippageBps`). 5.25.x sends neither, so for a quote with no
+ * `purpose` the server remembers the floor it last showed for the same
+ * wallet, pair and amount and uses that instead (`HeldFloorStore`). Remove
+ * the store once 5.25.x is gone.
  *
  * Applied by `BridgeService` to every same-chain swap, whichever provider
  * serves it: both providers tighten their on-chain slippage from

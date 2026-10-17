@@ -15,6 +15,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Transform } from "class-transformer";
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -109,6 +110,24 @@ export class BridgeQuoteDto {
   @IsString()
   @Matches(AMOUNT_RAW)
   minReceiveRaw?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Which of a swap's two quotes this is: `quote` for the card the user approves, `execute` for the re-quote right before signing. Only an `execute` quote is held to the approved floor.",
+    enum: ["quote", "execute"],
+  })
+  @IsOptional()
+  @IsIn(["quote", "execute"])
+  purpose?: "quote" | "execute";
+
+  @ApiPropertyOptional({
+    description:
+      "The card quote's opaque `floorToken`, sent back by the `execute` re-quote so it is held to the floor the user approved.",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  floorToken?: string;
 }
 
 export class BridgeTokenSearchQueryDto {

@@ -173,6 +173,8 @@ export interface BridgeBlocker {
     | { kind: "none" };
 }
 
+export type QuotePurpose = "quote" | "execute";
+
 export interface BridgeQuoteRequest {
   fromChain: Caip2;
   toChain: Caip2;
@@ -198,6 +200,15 @@ export interface BridgeQuoteRequest {
    * loosen it. Not a slippage input, so §8.4 holds.
    */
   minReceiveRaw?: string;
+  /**
+   * Which of a swap's two quotes this is. `quote` is the card the user
+   * approves and gets a `floorToken`; `execute` is the device's re-quote
+   * right before signing, the only one whose slippage is tightened.
+   * Absent from 5.26.x and older, which fall back to inferring it.
+   */
+  purpose?: QuotePurpose;
+  /** The card quote's `floorToken`, sent back by the `execute` re-quote. */
+  floorToken?: string;
   transferSpeedHint?: "fast" | "standard";
   useForwarder?: boolean;
 }
@@ -403,6 +414,12 @@ export interface BridgeQuote {
   issuedAt: string;
   /** ISO-8601. A quote past this is `stale_precondition`, never submitted. */
   expiresAt: string;
+  /**
+   * Signed floor for a same-chain swap's card quote (`purpose: "quote"`).
+   * Opaque: the device sends it back on the signing re-quote, which then
+   * holds this floor (floor-token.ts).
+   */
+  floorToken?: string;
 }
 
 /** One reachable chain in the queried support matrix (§5.3). */

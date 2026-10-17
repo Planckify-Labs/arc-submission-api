@@ -1,7 +1,8 @@
 # Swap floor held across quote and signing
 
-Status: server-only fix shipped 2026-10-15 (`src/bridge/held-floor.ts`). This
-note records why, and what a cleaner fix across the server and the app looks like.
+Status: server-only fix shipped 2026-10-15 (`src/bridge/held-floor.ts`). Items
+1 to 3 of the better fix landed 2026-10-17 (`src/bridge/floor-token.ts`, app
+`services/bridgeRoutes/floorTokens.ts`). Item 4 is still open.
 
 ## What broke
 
@@ -61,7 +62,30 @@ Limits of the fix:
   stable to a fraction of a basis point, but one live sample jumped 54 bps between
   two calls when its route changed.
 
-## Better fix (both sides, later)
+## Better fix (both sides)
+
+Done 2026-10-17, items 1 to 3:
+
+- The card quote is sent with `purpose: "quote"` and comes back with a
+  `floorToken`: HMAC-SHA256 over the reported floor, a hash of
+  (chain, wallet, fromAsset, toAsset, amount) and a 15 min expiry. The key is
+  `SWAP_FLOOR_TOKEN_SECRET`, or one derived from `JWT_SECRET` under its own
+  label when that is unset. A card quote is never tightened.
+- The app keeps the token in memory, matched by the swap and the card's
+  floor, and never shows it to the model. The signing re-quote sends
+  `purpose: "execute"`, the token and `minReceiveRaw`. The server holds the
+  token's floor (or the device's, if higher), else `minReceiveRaw` when the
+  token is missing, expired or for another swap.
+- A quote with no `purpose` (5.26.x and older) keeps the Valkey behaviour
+  above. Only those quotes read or write Valkey.
+- The app reports `floor_not_met` (with `shortfall_bps`), `quote_expired` and
+  `quote_stale` (the route disappeared) separately, each with its own copy, and
+  sends PostHog `route_requote_refused` for each. The coarse error stays
+  `stale_precondition`, so the agent's recovery is unchanged.
+- The log line now names the mode: `(…, card)`, `(…, execute)` or `(…, legacy)`,
+  and the source `token` when the floor came from one.
+
+Original plan:
 
 1. **Bind the re-quote to the approved quote.** Return an opaque, signed
    `floorToken` (or the `quoteId`) with the card quote. The device sends it back on

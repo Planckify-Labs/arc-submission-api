@@ -77,6 +77,8 @@ export class BridgeController {
       toAddress: dto.toAddress,
       // A floor, not a slippage: it can only make the route stricter.
       minReceiveRaw: dto.minReceiveRaw,
+      purpose: dto.purpose,
+      floorToken: dto.floorToken,
       // Slippage is deliberately absent from the DTO: it is a fixed
       // server-side default per route class, disclosed on the card but
       // NOT user-adjustable and NOT model-supplied (§8.4). A
