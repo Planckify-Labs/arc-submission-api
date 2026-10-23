@@ -2,7 +2,6 @@ import {
   PointTransactionStatus,
   PointTransactionType,
   Prisma,
-  ReferenceIdStatus,
 } from "@generated/prisma";
 import { InjectQueue } from "@nestjs/bullmq";
 import {
@@ -17,8 +16,12 @@ import { addressesEqual } from "../auth/address-compare";
 import { SETTLEMENT_JOB_OPTIONS } from "../blockchain-verification/settlement-policy";
 import { ExchangeRateService } from "../exchange-rate/exchange-rate.service";
 import { PrismaService } from "../prisma/prisma.service";
-import { ReferenceIdService } from "../reference-id/reference-id.service";
 import { PointsCacheService } from "../valkey/services/points-cache.service";
+import {
+  lockPointDeposit,
+  pointDepositJobId,
+  samePointDeposit,
+} from "./point-deposit-identity";
 import { CreatePointDepositDto } from "./dto/create-point-deposit.dto";
 import { GetPointPriceQueryDto } from "./dto/get-point-price-query.dto";
 import { PointHistoryQueryDto } from "./dto/point-history-query.dto";
@@ -34,7 +37,6 @@ export class PointsService {
     private readonly prisma: PrismaService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly pointsCache: PointsCacheService,
-    private readonly referenceIdService: ReferenceIdService,
     @InjectQueue("point-deposit") private readonly pointDepositQueue: Queue,
   ) {}
 
@@ -159,88 +161,25 @@ export class PointsService {
   // ── POST /points/deposit ───────────────────────────────────────────────────
 
   async createDeposit(userId: string, dto: CreatePointDepositDto) {
-    // 1. Validate wallet belongs to authenticated user
+    // 1. The payer must be the authenticated wallet itself. Every wallet
+    //    family signs in with its own SIWx signature and the app always sends
+    //    the ACTIVE wallet's session, so `user.walletAddress` is the proven
+    //    payer — including Stellar G-addresses and Solana keys, which sign in
+    //    as their own users. Linked addresses (WalletAccountLink) are
+    //    deliberately not accepted: linking is self-asserted, and refIds are
+    //    public on-chain, so honouring a link let anyone link a stranger's
+    //    address and be credited for the stranger's deposit.
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException("User not found");
-
-    // Ownership: the deposit's on-chain payer must be an address this user
-    // controls. For EVM that's their primary `walletAddress` (proven at
-    // sign-in). For non-EVM chains (e.g. Stellar) the on-chain payer is a
-    // per-chain address (the G-address) that differs from the primary — accept
-    // it when the user has linked it to their account (WalletAccountLink, via
-    // POST /auth/google/wallets). The linked address is then bound to this
-    // deposit and re-verified against the on-chain payer by the worker.
-    let ownsDepositAddress = addressesEqual(
-      user.walletAddress,
-      dto.walletAddress,
-    );
-    if (!ownsDepositAddress) {
-      const links = await this.prisma.walletAccountLink.findMany({
-        where: { userId },
-        select: { walletAddress: true },
-      });
-      ownsDepositAddress = links.some((l) =>
-        addressesEqual(l.walletAddress, dto.walletAddress),
-      );
-    }
-    if (!ownsDepositAddress) {
+    if (!addressesEqual(user.walletAddress, dto.walletAddress)) {
       throw new BadRequestException(
         "Wallet address does not belong to the authenticated user",
       );
     }
 
-    // 2. Atomically claim the refId via the ReferenceId table.
-    //    The ReferenceId table has a DB-level @unique on refId, so a plain
-    //    CREATE is race-safe — only one concurrent request wins; the other
-    //    gets P2002 and we return the in-progress deposit instead.
-    try {
-      await this.prisma.referenceId.create({
-        data: { refId: dto.refId, status: ReferenceIdStatus.PROCESSING },
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
-      ) {
-        // refId already claimed — look up the existing PointTransaction
-        const existing = await this.prisma.pointTransaction.findFirst({
-          where: { refId: dto.refId },
-          orderBy: { createdAt: "desc" },
-        });
-
-        if (existing?.status !== PointTransactionStatus.FAILED) {
-          return {
-            id: existing?.id ?? "",
-            status: existing?.status ?? PointTransactionStatus.PENDING,
-            refId: dto.refId,
-            message: "Deposit already submitted.",
-          };
-        }
-
-        // Previous attempt FAILED — reset ReferenceId and allow retry
-        await this.prisma.referenceId.update({
-          where: { refId: dto.refId },
-          data: { status: ReferenceIdStatus.PROCESSING },
-        });
-      } else {
-        throw error;
-      }
-    }
-
-    // Check txHash uniqueness
-    if (dto.txHash) {
-      const existingByHash = await this.prisma.pointTransaction.findFirst({
-        where: { txHash: dto.txHash },
-      });
-      if (
-        existingByHash &&
-        existingByHash.status !== PointTransactionStatus.FAILED
-      ) {
-        throw new ConflictException("Transaction hash already submitted");
-      }
-    }
-
-    // 3. Validate token
+    // 2. Validate everything before writing anything. The user has already
+    //    paid on-chain when this runs, so a rejection here must leave nothing
+    //    behind that would block a later retry of the same deposit.
     const token = await this.prisma.token.findUnique({
       where: { id: dto.tokenId },
     });
@@ -258,7 +197,6 @@ export class PointsService {
       );
     }
 
-    // 4. Validate blockchain
     const blockchain = await this.prisma.blockchain.findUnique({
       where: { id: dto.blockchainId },
     });
@@ -266,7 +204,6 @@ export class PointsService {
       throw new BadRequestException("Invalid or inactive blockchain");
     }
 
-    // 5. Validate smart contract
     const contract = await this.prisma.smartContract.findFirst({
       where: {
         blockchainId: dto.blockchainId,
@@ -280,7 +217,7 @@ export class PointsService {
       );
     }
 
-    // 6. Server-side point calculation
+    // Server-side point calculation
     // Use the same formula as getPointPrice: fetch exchange rate (token → currency),
     // then pointRate = exchangeRate / baseRate. This ensures the deposited token amount
     // and credited points are always consistent regardless of which stablecoin is used.
@@ -322,37 +259,77 @@ export class PointsService {
     // e.g. USDT→IDR = 16,000, IDR baseRate = 1 → 16000/1 = 16000 pts/USDT
     const pointRate = tokenRateInCurrency.div(priceConfig.baseRate);
 
-    // 7. Create PointTransaction record
-    const pointTx = await this.prisma.pointTransaction.create({
-      data: {
-        userId,
-        type: PointTransactionType.DEPOSIT,
-        status: PointTransactionStatus.PENDING,
-        amount: BigInt(0),
-        balanceBefore: BigInt(0),
-        balanceAfter: BigInt(0),
-        refId: dto.refId,
-        txHash: dto.txHash,
-        tokenId: dto.tokenId,
-        blockchainId: dto.blockchainId,
-        contractAddress: dto.contractAddress,
-        walletAddress: dto.walletAddress,
-        tokenAmount: new Prisma.Decimal(dto.tokenAmount),
-        pointRate,
-      },
+    // 3. Record the deposit, idempotently per (user, on-chain deposit). The
+    //    lock stands in for the unique index the hypertable can't have, so a
+    //    double-submit can't race in a second row.
+    const deposit = {
+      blockchainId: dto.blockchainId,
+      contractAddress: dto.contractAddress,
+      refId: dto.refId,
+    };
+    const { pointTx, created } = await this.prisma.$transaction(async (tx) => {
+      await lockPointDeposit(tx, deposit);
+
+      // A retry of this user's own submission returns the row it made.
+      // Scoped to the user on purpose: another user's row for the same refId
+      // can never be credited (the worker checks the on-chain payer), so it
+      // must not block the real payer either.
+      const existing = await tx.pointTransaction.findFirst({
+        where: {
+          ...samePointDeposit(deposit),
+          userId,
+          status: { not: PointTransactionStatus.FAILED },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existing) return { pointTx: existing, created: false };
+
+      // Scoped to the user for the same reason.
+      const existingByHash = await tx.pointTransaction.findFirst({
+        where: {
+          userId,
+          type: PointTransactionType.DEPOSIT,
+          txHash: dto.txHash,
+          status: { not: PointTransactionStatus.FAILED },
+        },
+      });
+      if (existingByHash) {
+        throw new ConflictException("Transaction hash already submitted");
+      }
+
+      const row = await tx.pointTransaction.create({
+        data: {
+          userId,
+          type: PointTransactionType.DEPOSIT,
+          status: PointTransactionStatus.PENDING,
+          amount: BigInt(0),
+          balanceBefore: BigInt(0),
+          balanceAfter: BigInt(0),
+          refId: dto.refId,
+          txHash: dto.txHash,
+          tokenId: dto.tokenId,
+          blockchainId: dto.blockchainId,
+          contractAddress: dto.contractAddress,
+          walletAddress: dto.walletAddress,
+          tokenAmount: new Prisma.Decimal(dto.tokenAmount),
+          pointRate,
+        },
+      });
+      return { pointTx: row, created: true };
     });
 
-    // 8. Enqueue verification job
-    await this.pointDepositQueue.add(
-      "verify-deposit",
-      {
-        pointTransactionId: pointTx.id,
-        pointTransactionCreatedAt: pointTx.createdAt,
-      },
-      // Long, capped schedule: a deposit is only ever told "didn't go
-      // through" on a chain verdict, so our own outages just delay it.
-      SETTLEMENT_JOB_OPTIONS,
-    );
+    // 4. Enqueue verification — after commit, so the worker never looks for
+    //    a row that isn't visible yet.
+    await this.enqueueDepositVerification(pointTx);
+
+    if (!created) {
+      return {
+        id: pointTx.id,
+        status: pointTx.status,
+        refId: dto.refId,
+        message: "Deposit already submitted.",
+      };
+    }
 
     this.logger.log(
       `Point deposit submitted: ${pointTx.id} for user ${userId}`,
@@ -365,6 +342,40 @@ export class PointsService {
       message:
         "Deposit submitted. Points will be credited after on-chain verification.",
     };
+  }
+
+  /**
+   * Adds the deposit's verification job, keyed by the row so it is added at
+   * most once. Re-running it for an existing row is how a client retry heals
+   * a deposit whose insert committed but whose enqueue failed: the row is
+   * still PENDING and has no job. Rows already handed to ops (`needsReview`)
+   * are left alone — a client retry must not re-open them.
+   */
+  private async enqueueDepositVerification(pointTx: {
+    id: string;
+    createdAt: Date;
+    status: PointTransactionStatus;
+    metadata: Prisma.JsonValue;
+  }): Promise<void> {
+    if (pointTx.status !== PointTransactionStatus.PENDING) return;
+    const meta =
+      pointTx.metadata && typeof pointTx.metadata === "object"
+        ? (pointTx.metadata as Record<string, unknown>)
+        : {};
+    if (meta.needsReview === true) return;
+
+    const jobId = pointDepositJobId(pointTx.id);
+    if (await this.pointDepositQueue.getJob(jobId)) return;
+    await this.pointDepositQueue.add(
+      "verify-deposit",
+      {
+        pointTransactionId: pointTx.id,
+        pointTransactionCreatedAt: pointTx.createdAt,
+      },
+      // Long, capped schedule: a deposit is only ever told "didn't go
+      // through" on a chain verdict, so our own outages just delay it.
+      { ...SETTLEMENT_JOB_OPTIONS, jobId },
+    );
   }
 
   // ── GET /points/history ────────────────────────────────────────────────────

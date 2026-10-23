@@ -9,6 +9,7 @@ import {
   Res,
   Request,
   ConflictException,
+  BadRequestException,
   Logger,
   UseGuards,
 } from "@nestjs/common";
@@ -35,6 +36,7 @@ import { JwtAuthGuard } from "src/auth/guards/jwt-auth.guard";
 import { RolesGuard } from "src/auth/guards/roles.guard";
 import { Roles } from "src/decorators/roles.decorator";
 import { UserRole } from "@generated/prisma";
+import { addressesEqual } from "../auth/address-compare";
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller("purchases")
@@ -50,8 +52,22 @@ export class PurchasesController {
   @ApiCreatePurchase()
   async create(
     @Body() createPurchaseDto: CreatePurchaseDto,
+    @Request() req: { user: { walletAddress?: string | null } },
     @Res() res: Response,
   ) {
+    // The purchase is recorded against `walletAddress`, and its refId is
+    // claimed before anything is checked on-chain. Without this, anyone who
+    // read a booking's refId and wallet off the chain could claim it first,
+    // pointed at the wrong contract, and leave the real payer's purchase
+    // permanently "previously used".
+    if (
+      !addressesEqual(req.user?.walletAddress, createPurchaseDto.walletAddress)
+    ) {
+      throw new BadRequestException(
+        "Wallet address does not belong to the authenticated user",
+      );
+    }
+
     this.logger.log("=== PURCHASE CREATION REQUEST ===");
     this.logger.log(
       "Received createPurchaseDto:",

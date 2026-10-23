@@ -8,7 +8,6 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { ExchangeRateModule } from "../exchange-rate/exchange-rate.module";
 import { BlockchainVerificationModule } from "../blockchain-verification/blockchain-verification.module";
 import { ValkeyModule } from "../valkey/valkey.module";
-import { ReferenceIdModule } from "../reference-id/reference-id.module";
 import { PushModule } from "../push/push.module";
 
 @Module({
@@ -29,7 +28,6 @@ import { PushModule } from "../push/push.module";
     ExchangeRateModule,
     BlockchainVerificationModule,
     ValkeyModule,
-    ReferenceIdModule,
     PushModule,
   ],
   controllers: [PointsController],

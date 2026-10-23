@@ -14,6 +14,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { PushService } from "../../push/push.service";
 import { truncateAddress } from "../../utils/address";
 import { PointsCacheService } from "../../valkey/services/points-cache.service";
+import { lockPointDeposit, samePointDeposit } from "../point-deposit-identity";
 
 interface PointDepositJobData {
   pointTransactionId: string;
@@ -142,8 +143,42 @@ export class PointDepositProcessor extends WorkerHost {
       // the depositor actually requested.
       const points = BigInt(humanAmount.mul(pointRate).round().toFixed(0));
 
-      // 7. Credit points atomically
+      // 7. Credit points atomically, at most once per on-chain deposit.
+      //    Intake keeps one live row per (user, deposit) and only accepts the
+      //    session wallet as payer, so a second credited row should be
+      //    impossible — but rows accepted before that (via self-asserted
+      //    wallet links) could name another user's payment. The chain moved
+      //    the money once; it is credited once.
+      const deposit = {
+        blockchainId: blockchain.id,
+        contractAddress: pointTx.contractAddress ?? "",
+        refId: pointTx.refId!,
+      };
       const finalBalance = await this.prisma.$transaction(async (tx) => {
+        await lockPointDeposit(tx, deposit);
+        const alreadyCredited = await tx.pointTransaction.findFirst({
+          where: {
+            ...samePointDeposit(deposit),
+            status: PointTransactionStatus.COMPLETED,
+            NOT: { id: pointTransactionId },
+          },
+          select: { id: true },
+        });
+        if (alreadyCredited) {
+          await tx.pointTransaction.update({
+            where: { id_createdAt: txKey },
+            data: {
+              status: PointTransactionStatus.FAILED,
+              metadata: {
+                error: "on-chain deposit already credited",
+                duplicateOf: alreadyCredited.id,
+                failedAt: new Date().toISOString(),
+              },
+            },
+          });
+          return null;
+        }
+
         const balance = await tx.pointBalance.findUnique({
           where: { userId: pointTx.userId },
         });
@@ -174,6 +209,13 @@ export class PointDepositProcessor extends WorkerHost {
 
         return newBalance;
       });
+
+      if (finalBalance === null) {
+        this.logger.warn(
+          `Point deposit (tx ${pointTx.txHash}) not credited: refId ${pointTx.refId} was already credited on another row`,
+        );
+        return;
+      }
 
       // 8. Invalidate cache
       await this.pointsCache.invalidateBalance(pointTx.userId);

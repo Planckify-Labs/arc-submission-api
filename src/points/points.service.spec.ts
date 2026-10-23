@@ -6,7 +6,6 @@ import {
 import type { Queue } from "bullmq";
 import type { ExchangeRateService } from "../exchange-rate/exchange-rate.service";
 import type { PrismaService } from "../prisma/prisma.service";
-import type { ReferenceIdService } from "../reference-id/reference-id.service";
 import type { PointsCacheService } from "../valkey/services/points-cache.service";
 import { PointsService } from "./points.service";
 
@@ -19,12 +18,20 @@ function buildHarness(
     priceConfig?: Record<string, unknown> | null;
     exchangeRate?: { rate: number } | null;
     balance?: { balance: bigint } | null;
-    refIdCreateError?: { code: string };
     existingPointTx?: Record<string, unknown> | null;
     existingByHash?: Record<string, unknown> | null;
-    walletLinks?: { walletAddress: string }[];
+    existingJob?: Record<string, unknown> | null;
   } = {},
 ) {
+  // createDeposit's lookups run inside its transaction; one implementation
+  // serves both clients so either can be asserted on.
+  const findPointTx = jest.fn(
+    async ({ where }: { where: { txHash?: string; refId?: string } }) => {
+      await Promise.resolve();
+      if (where.txHash) return opts.existingByHash ?? null;
+      return opts.existingPointTx ?? null;
+    },
+  );
   const txCalls = {
     pointBalance: {
       findUnique: jest.fn(async () => opts.balance ?? null),
@@ -32,9 +39,11 @@ function buildHarness(
       create: jest.fn(async () => ({})),
     },
     pointTransaction: {
+      findFirst: findPointTx,
       create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: "ptx_1",
         createdAt: new Date(),
+        metadata: null,
         ...data,
       })),
       update: jest.fn(async () => ({})),
@@ -45,6 +54,7 @@ function buildHarness(
     },
   };
   const tx: Record<string, unknown> = {
+    $executeRaw: jest.fn(async () => 1),
     pointBalance: txCalls.pointBalance,
     pointTransaction: txCalls.pointTransaction,
     pointPriceConfig: txCalls.pointPriceConfig,
@@ -70,13 +80,7 @@ function buildHarness(
     },
     pointBalance: { findUnique: jest.fn(async () => opts.balance ?? null) },
     pointTransaction: {
-      findFirst: jest.fn(
-        async ({ where }: { where: { txHash?: string; refId?: string } }) => {
-          await Promise.resolve();
-          if (where.txHash) return opts.existingByHash ?? null;
-          return opts.existingPointTx ?? null;
-        },
-      ),
+      findFirst: findPointTx,
       findMany: jest.fn(async () => []),
       create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: "ptx_top",
@@ -85,19 +89,7 @@ function buildHarness(
       })),
       aggregate: jest.fn(async () => ({ _sum: { amount: BigInt(0) } })),
     },
-    referenceId: {
-      create: jest.fn(async () => {
-        await Promise.resolve();
-        if (opts.refIdCreateError) {
-          throw Object.assign(new Error("dup"), opts.refIdCreateError);
-        }
-        return { id: "ri" };
-      }),
-      update: jest.fn(async () => ({})),
-    },
-    walletAccountLink: {
-      findMany: jest.fn(async () => opts.walletLinks ?? []),
-    },
+    walletAccountLink: { findMany: jest.fn(async () => []) },
   } as unknown as PrismaService;
 
   const exchangeRateService = {
@@ -119,33 +111,18 @@ function buildHarness(
     invalidatePrices: jest.fn(async () => undefined),
   } as unknown as PointsCacheService;
 
-  const referenceIdService = {} as ReferenceIdService;
-
   const queue = {
     add: jest.fn(async () => ({ id: "job_1" })),
+    getJob: jest.fn(async () => opts.existingJob ?? null),
   } as unknown as Queue;
-
-  // Patch Prisma.PrismaClientKnownRequestError instanceof check for catch block
-  const { Prisma } = require("@generated/prisma");
-  if (opts.refIdCreateError) {
-    (prisma.referenceId.create as jest.Mock).mockImplementation(async () => {
-      await Promise.resolve();
-      const err = new Prisma.PrismaClientKnownRequestError("dup", {
-        code: opts.refIdCreateError!.code,
-        clientVersion: "0",
-      });
-      throw err;
-    });
-  }
 
   const svc = new PointsService(
     prisma,
     exchangeRateService,
     pointsCache,
-    referenceIdService,
     queue,
   );
-  return { svc, prisma, queue, pointsCache, exchangeRateService, txCalls };
+  return { svc, prisma, queue, pointsCache, exchangeRateService, txCalls, tx };
 }
 
 describe("PointsService.getPointPrice", () => {
@@ -253,6 +230,18 @@ describe("PointsService.getBalance", () => {
   });
 });
 
+const validRefs = {
+  token: {
+    isActive: true,
+    isStablecoin: true,
+    symbol: "IDRX",
+    peggedCurrency: "IDR",
+  },
+  blockchain: { isActive: true },
+  contract: { id: "sc_1", isActive: true },
+  priceConfig: { baseRate: "1" },
+};
+
 describe("PointsService.createDeposit input validation", () => {
   const dto = {
     refId: "ref_1",
@@ -281,24 +270,57 @@ describe("PointsService.createDeposit input validation", () => {
     );
   });
 
-  it("returns existing-deposit response when refId is reused (P2002)", async () => {
-    const { svc } = buildHarness({
+  it("rejects a payer that is only a linked address", async () => {
+    // Links are self-asserted (POST /auth/google/wallets takes no proof), and
+    // refIds are public on-chain — accepting a link let anyone claim a
+    // stranger's deposit by linking the stranger's address first.
+    const { svc, prisma } = buildHarness({
       user: { id: "u1", walletAddress: "0xUSER" },
-      refIdCreateError: { code: "P2002" },
-      existingPointTx: { id: "ptx_old", status: "PENDING" },
+      ...validRefs,
     });
-    const out = await svc.createDeposit("u1", dto as never);
-    expect(out.message).toMatch(/already submitted/i);
+    await expect(
+      svc.createDeposit("u1", { ...dto, walletAddress: "GVICTIM" } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.walletAccountLink.findMany).not.toHaveBeenCalled();
   });
 
-  it("rejects when txHash already used by a non-failed deposit (409)", async () => {
-    const { svc } = buildHarness({
+  it("rejects when this user already used the txHash for another deposit (409)", async () => {
+    const { svc, txCalls } = buildHarness({
       user: { id: "u1", walletAddress: "0xUSER" },
+      ...validRefs,
       existingByHash: { status: "PENDING" },
     });
     await expect(svc.createDeposit("u1", dto as never)).rejects.toBeInstanceOf(
       ConflictException,
     );
+    // Scoped to the caller — another user submitting this hash must not be
+    // able to lock the real payer out.
+    expect(txCalls.pointTransaction.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({ userId: "u1", txHash: "0xhash" }),
+    });
+  });
+
+  it("writes nothing when validation fails after the user already paid", async () => {
+    // A non-pegged token with no exchange rate: the old flow had already
+    // claimed the refId by this point, so the retry dead-ended forever.
+    const { svc, prisma, queue } = buildHarness({
+      user: { id: "u1", walletAddress: "0xUSER" },
+      token: {
+        isActive: true,
+        isStablecoin: true,
+        symbol: "USDT",
+        peggedCurrency: "USD",
+      },
+      blockchain: { isActive: true },
+      contract: { id: "sc_1", isActive: true },
+      priceConfig: { baseRate: "1" },
+      exchangeRate: null,
+    });
+    await expect(svc.createDeposit("u1", dto as never)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it("rejects bad token (not active / not stablecoin)", async () => {
@@ -381,61 +403,136 @@ describe("PointsService.createDeposit happy path", () => {
     currency: "IDR",
   };
 
-  it("creates a PENDING PointTransaction and enqueues verify-deposit", async () => {
-    const { svc, prisma, queue } = buildHarness({
+  it("creates a PENDING PointTransaction under the deposit lock and enqueues verify-deposit", async () => {
+    const { svc, txCalls, tx, queue } = buildHarness({
       user: { id: "u1", walletAddress: "0xUSER" },
-      token: {
-        isActive: true,
-        isStablecoin: true,
-        symbol: "IDRX",
-        peggedCurrency: "IDR",
-      },
-      blockchain: { isActive: true },
-      contract: { id: "sc_1", isActive: true },
-      priceConfig: { baseRate: "1" },
+      ...validRefs,
     });
     const out = await svc.createDeposit("u1", dto as never);
-    expect(prisma.pointTransaction.create).toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(txCalls.pointTransaction.create).toHaveBeenCalled();
     expect(queue.add).toHaveBeenCalledWith(
       "verify-deposit",
-      expect.objectContaining({ pointTransactionId: "ptx_top" }),
+      expect.objectContaining({ pointTransactionId: "ptx_1" }),
       // Long, capped schedule from settlement-policy: our own outages
-      // only delay a deposit, they never fail it.
-      expect.objectContaining({ attempts: 150, backoff: { type: "custom" } }),
+      // only delay a deposit, they never fail it. Keyed by row so it is
+      // added once.
+      expect.objectContaining({
+        attempts: 150,
+        backoff: { type: "custom" },
+        jobId: "point-deposit-ptx_1",
+      }),
     );
     expect(out.status).toBe("PENDING");
   });
 
-  it("accepts a deposit whose payer is a linked (non-primary) address and records it", async () => {
-    // Mirrors the Stellar case: the user's primary address is EVM, but the
-    // on-chain payer is their linked G-address. Ownership is satisfied via
-    // WalletAccountLink, and the payer is persisted for the verifier.
-    const stellarDto = {
-      ...dto,
-      refId: "ref_link",
-      txHash: "0xhash_link",
-      walletAddress: "GSTELLARPAYER",
-    };
-    const { svc, prisma } = buildHarness({
-      user: { id: "u1", walletAddress: "0xUSER" },
-      walletLinks: [{ walletAddress: "GSTELLARPAYER" }],
-      token: {
-        isActive: true,
-        isStablecoin: true,
-        symbol: "IDRX",
-        peggedCurrency: "IDR",
-      },
-      blockchain: { isActive: true },
-      contract: { id: "sc_1", isActive: true },
-      priceConfig: { baseRate: "1" },
+  it("accepts a non-EVM payer that is the session wallet itself", async () => {
+    // Stellar / Solana wallets sign in with their own SIWS session, so the
+    // session user's walletAddress IS the G-address — no link needed.
+    const { svc, txCalls } = buildHarness({
+      user: { id: "u1", walletAddress: "GSTELLARPAYER" },
+      ...validRefs,
     });
-    const out = await svc.createDeposit("u1", stellarDto as never);
+    const out = await svc.createDeposit("u1", {
+      ...dto,
+      walletAddress: "GSTELLARPAYER",
+    } as never);
     expect(out.status).toBe("PENDING");
-    expect(prisma.pointTransaction.create).toHaveBeenCalledWith(
+    expect(txCalls.pointTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ walletAddress: "GSTELLARPAYER" }),
       }),
     );
+  });
+});
+
+describe("PointsService.createDeposit idempotency", () => {
+  const dto = {
+    refId: "ref_i",
+    walletAddress: "0xUSER",
+    txHash: "0xhash_i",
+    tokenId: "tk_1",
+    blockchainId: "bc_1",
+    contractAddress: "0xCONTRACT",
+    tokenAmount: "100",
+    currency: "IDR",
+  };
+  const existing = {
+    id: "ptx_old",
+    status: "PENDING",
+    createdAt: new Date("2026-10-23T00:00:00Z"),
+    metadata: null,
+  };
+
+  it("returns the caller's own row for a retried deposit instead of a second one", async () => {
+    const { svc, txCalls } = buildHarness({
+      user: { id: "u1", walletAddress: "0xUSER" },
+      ...validRefs,
+      existingPointTx: existing,
+      existingJob: { id: "point-deposit-ptx_old" },
+    });
+    const out = await svc.createDeposit("u1", dto as never);
+    expect(out).toEqual(
+      expect.objectContaining({ id: "ptx_old", status: "PENDING" }),
+    );
+    expect(out.message).toMatch(/already submitted/i);
+    expect(txCalls.pointTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it("only treats the caller's own rows as the existing submission", async () => {
+    // Another user's row for the same refId can never be credited — the
+    // worker checks the on-chain payer — so it must not block the real payer.
+    const { svc, txCalls } = buildHarness({
+      user: { id: "u1", walletAddress: "0xUSER" },
+      ...validRefs,
+    });
+    await svc.createDeposit("u1", dto as never);
+    expect(txCalls.pointTransaction.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: "u1",
+          refId: "ref_i",
+          blockchainId: "bc_1",
+          contractAddress: { equals: "0xCONTRACT", mode: "insensitive" },
+        }),
+      }),
+    );
+  });
+
+  it("re-enqueues a retried PENDING row whose job never got added", async () => {
+    const { svc, queue } = buildHarness({
+      user: { id: "u1", walletAddress: "0xUSER" },
+      ...validRefs,
+      existingPointTx: existing,
+      existingJob: null,
+    });
+    await svc.createDeposit("u1", dto as never);
+    expect(queue.add).toHaveBeenCalledWith(
+      "verify-deposit",
+      expect.objectContaining({ pointTransactionId: "ptx_old" }),
+      expect.objectContaining({ jobId: "point-deposit-ptx_old" }),
+    );
+  });
+
+  it("does not re-enqueue a retried row that still has its job", async () => {
+    const { svc, queue } = buildHarness({
+      user: { id: "u1", walletAddress: "0xUSER" },
+      ...validRefs,
+      existingPointTx: existing,
+      existingJob: { id: "point-deposit-ptx_old" },
+    });
+    await svc.createDeposit("u1", dto as never);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("does not re-open a row already handed to ops", async () => {
+    const { svc, queue } = buildHarness({
+      user: { id: "u1", walletAddress: "0xUSER" },
+      ...validRefs,
+      existingPointTx: { ...existing, metadata: { needsReview: true } },
+    });
+    await svc.createDeposit("u1", dto as never);
+    expect(queue.add).not.toHaveBeenCalled();
   });
 });
 
