@@ -130,6 +130,20 @@ services:
       SWAP_PREFERRED_PROVIDERS: ${SWAP_PREFERRED_PROVIDERS-tower,lifi}
       ROUTE_POLICY_ONLY_PROVIDERS: ${ROUTE_POLICY_ONLY_PROVIDERS-tower}
       DISABLED_ROUTE_PROVIDERS: ${DISABLED_ROUTE_PROVIDERS}
+      # Onramp / Add funds → Buy (src/onramp/onramp.config.ts). Buy stays off
+      # until ONRAMP_API_KEY and ONRAMP_HOSTED_PAGE_URL are set; production
+      # also needs ONRAMP_SUPPORT and ONRAMP_REFERRER_DOMAIN. An empty value
+      # reads as unset, so no `:-` defaults here: the code owns them.
+      ONRAMP_ENABLED: ${ONRAMP_ENABLED}
+      ONRAMP_ENVIRONMENT: ${ONRAMP_ENVIRONMENT}
+      ONRAMP_API_KEY: ${ONRAMP_API_KEY}
+      ONRAMP_SUPPORT: ${ONRAMP_SUPPORT}
+      ONRAMP_HOSTED_PAGE_URL: ${ONRAMP_HOSTED_PAGE_URL}
+      ONRAMP_REFERRER_DOMAIN: ${ONRAMP_REFERRER_DOMAIN}
+      ONRAMP_EXTERNAL_LINK_HOSTS: ${ONRAMP_EXTERNAL_LINK_HOSTS}
+      ONRAMP_SESSION_RATE_LIMIT: ${ONRAMP_SESSION_RATE_LIMIT}
+      ONRAMP_API_BASE_URL: ${ONRAMP_API_BASE_URL}
+      ONRAMP_WIDGET_BASE_URL: ${ONRAMP_WIDGET_BASE_URL}
       ZERION_API_URL: ${ZERION_API_URL:-https://api.zerion.io/v1}
       DEBANK_API_URL: ${DEBANK_API_URL:-https://api.cloud.debank.com/v1}
       # DeFi Strategies — worker toggles & budgets
