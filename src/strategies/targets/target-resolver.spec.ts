@@ -127,6 +127,44 @@ describe("MorphoResolver via resolveTarget", () => {
     ).toBeNull();
   });
 
+  it("resolves a Morpho-listed Vault V2 and ignores an unlisted look-alike", async () => {
+    const FAKE = "0x3333333333333333333333333333333333333333";
+    const v2Ctx = (listed: boolean): ResolverContext => ({
+      fetchJsonCached: async <T>(_key: string, url: string) =>
+        (url.includes("morpho")
+          ? {
+              data: {
+                vaults: { items: [] },
+                vaultV2s: {
+                  items: [
+                    {
+                      address: VAULT,
+                      name: "Steakhouse USDC",
+                      listed,
+                      asset: { address: UNDERLYING },
+                    },
+                    {
+                      address: FAKE,
+                      name: "Steakhouse USDC",
+                      listed: false,
+                      asset: { address: UNDERLYING },
+                    },
+                  ],
+                },
+              },
+            }
+          : []) as unknown as T,
+      validate: async () => true,
+    });
+    expect(await resolveTarget(morphoPool(), v2Ctx(true))).toEqual({
+      kind: "erc4626",
+      vault: VAULT.toLowerCase(),
+      asset: UNDERLYING.toLowerCase(),
+    });
+    // Only unlisted vaults left: the copy never resolves, whatever its name.
+    expect(await resolveTarget(morphoPool(), v2Ctx(false))).toBeNull();
+  });
+
   it("fails closed when the pool has no underlying token address", async () => {
     const ctx = ctxWith(true, [
       {

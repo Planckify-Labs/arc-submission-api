@@ -203,6 +203,9 @@ const MORPHO_QUERY = `query Vaults($chainId: Int!) {
   vaults(first: 1000, where: { chainId_in: [$chainId] }) {
     items { address name symbol listed asset { address } }
   }
+  vaultV2s(first: 1000, where: { chainId_in: [$chainId] }) {
+    items { address name symbol listed asset { address } }
+  }
 }`;
 
 /** Exported so the drift spec asserts the EXACT query this resolver sends. */
@@ -213,12 +216,15 @@ async function fetchMorphoVaults(
   ctx: ResolverContext,
 ): Promise<MorphoVault[]> {
   const res = await ctx.fetchJsonCached<{
-    data?: { vaults?: { items?: MorphoVault[] } };
+    data?: {
+      vaults?: { items?: MorphoVault[] };
+      vaultV2s?: { items?: MorphoVault[] };
+    };
     errors?: Array<{ message?: string }>;
   }>(
-    // v2: a cached v1 body was fetched with the old field names, so reusing the
-    // key would keep serving an empty vault list for the whole TTL.
-    `defillama:targets:morpho:vaults:${chainId}:v2`,
+    // v3: the body now carries Vault V2s too, so a cached v2 body (V1 only)
+    // would hide every V2 vault for the whole TTL.
+    `defillama:targets:morpho:vaults:${chainId}:v3`,
     "https://api.morpho.org/graphql",
     VAULT_LIST_TTL_SEC,
     {
@@ -235,7 +241,15 @@ async function fetchMorphoVaults(
     );
     return [];
   }
-  const items = res?.data?.vaults?.items ?? [];
+  // Vault V2 is Morpho's current vault (the only kind on Arc, 2026-10-26),
+  // ERC-4626 with a gate convention validateErc4626 understands. A V2 vault
+  // must be LISTED by Morpho itself: the registry also returns anyone's
+  // deployments, including a no-curator copy named after a real vault, and
+  // the protocol's own listing is the curation fact we can check.
+  const v2 = (res?.data?.vaultV2s?.items ?? []).filter(
+    (v) => v.listed === true,
+  );
+  const items = [...(res?.data?.vaults?.items ?? []), ...v2];
   if (items.length === 0)
     warnEmptyRegistry("morpho", chainId, "api.morpho.org");
   return items;

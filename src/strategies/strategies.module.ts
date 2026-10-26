@@ -6,6 +6,7 @@ import { ValkeyModule } from "../valkey/valkey.module";
 import { AlchemyPricesClient } from "./external/alchemy-prices.client";
 import { DeBankClient } from "./external/debank.client";
 import { DeFiLlamaClient } from "./external/defillama.client";
+import { MarketProtocolPoolsSource } from "./external/market-protocol-pools.source";
 import { MarketRiskClient } from "./external/market-risk.client";
 import { LifiClient } from "./external/lifi.client";
 import { SuiLstSource } from "./external/sui-lst.source";
@@ -55,6 +56,7 @@ import { StablecoinDepegWatcherProcessor } from "./workers/stablecoin-depeg-watc
     DeBankClient,
     AlchemyPricesClient,
     MarketRiskClient,
+    MarketProtocolPoolsSource,
     ScoringService,
     RouterQuoteService,
     RecurringInvestService,

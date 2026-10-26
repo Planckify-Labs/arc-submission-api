@@ -49,7 +49,9 @@ const CACHE_TTL_SEC = 30 * 60;
 const DEFAULT_MAX_RUN_AGE_HOURS = 72;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const TRUSTED_METHODS = new Set(["uuidv5", "attributes"]);
+// protocol-api: a pool the market API read from the protocol's own API, whose
+// id is derived from the address it carries (exact by construction).
+const TRUSTED_METHODS = new Set(["uuidv5", "attributes", "protocol-api"]);
 
 export function marketApiConfig(): { url: string; key: string } | null {
   const url = process.env.MARKET_API_URL?.trim().replace(/\/+$/, "");

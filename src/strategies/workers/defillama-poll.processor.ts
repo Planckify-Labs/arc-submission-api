@@ -11,6 +11,7 @@ import {
   DeFiLlamaClient,
   DeFiLlamaYieldPool,
 } from "../external/defillama.client";
+import { MarketProtocolPoolsSource } from "../external/market-protocol-pools.source";
 import { SuiLstSource } from "../external/sui-lst.source";
 import { PrismaService } from "../../prisma/prisma.service";
 import { TargetResolverService } from "../targets/target-resolver.service";
@@ -31,6 +32,7 @@ export class DefiLlamaPollProcessor extends WorkerHost {
   constructor(
     private readonly defillama: DeFiLlamaClient,
     private readonly suiLstSource: SuiLstSource,
+    private readonly protocolPools: MarketProtocolPoolsSource,
     private readonly prisma: PrismaService,
     private readonly targetResolver: TargetResolverService,
     @InjectQueue("score-opportunities") private readonly scoringQueue: Queue,
@@ -53,9 +55,12 @@ export class DefiLlamaPollProcessor extends WorkerHost {
         this.logger.error(`Sui LST source failed: ${err.message}`);
         return [];
       });
-      const pools = [...feedPools, ...lstPools];
+      // Pools read from protocols' own APIs (via the market API) on chains the
+      // feed has none for, e.g. Morpho Vault V2 on Arc. Never sinks the poll.
+      const sourcedPools = await this.protocolPools.getPools();
+      const pools = [...feedPools, ...lstPools, ...sourcedPools];
       this.logger.log(
-        `Fetched ${feedPools.length} pools from DeFiLlama (+${lstPools.length} synthesized Sui LST)`,
+        `Fetched ${feedPools.length} pools from DeFiLlama (+${lstPools.length} synthesized Sui LST, +${sourcedPools.length} from protocol APIs)`,
       );
 
       // In a real implementation, we might save the raw data or update a temporary cache
