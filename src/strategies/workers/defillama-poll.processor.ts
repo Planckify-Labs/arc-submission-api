@@ -71,6 +71,12 @@ export class DefiLlamaPollProcessor extends WorkerHost {
           { pool },
           {
             removeOnComplete: true,
+            // A FAILED job must not keep its id either: BullMQ silently ignores
+            // an add whose jobId sits in the failed set, so one failure froze
+            // that pool for good (2026-10-26: 293 pools stuck after a missing
+            // column, every later poll's add discarded). The processor logs
+            // the failure; the next tick simply retries.
+            removeOnFail: true,
             jobId: `score-${pool.pool}`, // Idempotency
           },
         );
@@ -163,7 +169,11 @@ export class DefiLlamaPollProcessor extends WorkerHost {
       await this.scoringQueue.add(
         "score-pool",
         { pool },
-        { removeOnComplete: true, jobId: `score-${pool.pool}` },
+        {
+          removeOnComplete: true,
+          removeOnFail: true,
+          jobId: `score-${pool.pool}`,
+        },
       );
       enqueued++;
     }
