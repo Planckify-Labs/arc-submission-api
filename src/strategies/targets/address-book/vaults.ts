@@ -356,3 +356,386 @@ export const AVANTIS_VAULTS: PinnedVaultBook = {
     },
   ],
 };
+
+// ── Aave v4 (hub-and-spoke) ─────────────────────────────────────────────────
+
+/** One Aave v4 TokenizationSpoke: an ERC-4626 over one asset of one hub. */
+export interface AaveV4TokenizationSpoke {
+  readonly vault: Address;
+  readonly asset: Address;
+  /** The hub the spoke supplies to; proven on chain via `hub()` at resolve. */
+  readonly hub: Address;
+  /** The hub's name in Aave's book (CORE, PRIME, GLOBAL_DOLLAR, ...). */
+  readonly hubName: string;
+  readonly label: string;
+}
+
+export type AaveV4TokenizationBook = Readonly<
+  Record<number, readonly AaveV4TokenizationSpoke[]>
+>;
+
+/**
+ * Aave v4 TokenizationSpokes: Aave's own "ERC4626 compliant wrapper to
+ * tokenize one listed asset of the connected Hub" (aave/aave-v4
+ * src/spoke/TokenizationSpoke.sol). Depositing into one supplies to that hub
+ * asset, so a v4 hub pool executes through the generic `erc4626` kind and
+ * every ERC-4626 safety check, with no v4-specific call shape.
+ *
+ * Source: bgd-labs/aave-address-book src/AaveV4{Ethereum,Avalanche,Arc,Base}.sol
+ * (`*_TOKENIZATION_SPOKE` and `*_HUB` constants). Verified on chain
+ * 2026-10-26: every spoke's hub() equals the hub its constant names, and
+ * asset() is the underlying recorded here. Added WITHOUT a human
+ * countersignature under the owner's 2026-10-26 waiver (sign-off log
+ * section 12). `hubName` is matched against a pool's poolMeta, which
+ * DeFiLlama and the market API both set to the hub's name.
+ */
+export const AAVE_V4_TOKENIZATION_SPOKES: AaveV4TokenizationBook = {
+  // Ethereum
+  1: [
+    {
+      vault: "0x7320CF22Ac095bA2a2e0a652F77efB836c2E751b",
+      asset: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreWETH",
+    }, // WETH
+    {
+      vault: "0xcb0E7dA9c635628f6d4827355AeCa75aB8d3560f",
+      asset: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCorewstETH",
+    }, // wstETH
+    {
+      vault: "0x559cEc2C840D9DBB18936Afc5E5341D78bfC7Cbe",
+      asset: "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreweETH",
+    }, // weETH
+    {
+      vault: "0x45a04Ca1A5cbEeA4B44356c75EDd29b33eB2527a",
+      asset: "0xA1290d69c65A6Fe4DF752f95823fae25cB99e5A7",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCorersETH",
+    }, // rsETH
+    {
+      vault: "0x5eC44a70F309854fe04d495cFE1B5dA63DD1cc73",
+      asset: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreUSDT",
+    }, // USDT
+    {
+      vault: "0x531E90a2376902DE8915789Fcc1075e3B0c153E7",
+      asset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreUSDC",
+    }, // USDC
+    {
+      vault: "0x58C14a5E061c9bC6926c5b853445290F296C2F7B",
+      asset: "0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreGHO",
+    }, // GHO
+    {
+      vault: "0xC8a125AE4275a78AADc53B46Ca10566Bc9B249E0",
+      asset: "0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreRLUSD",
+    }, // RLUSD
+    {
+      vault: "0xAC2435E3C25e8246870D33ce0a26988A46d5DB68",
+      asset: "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreUSDG",
+    }, // USDG
+    {
+      vault: "0x2226749630775ee20230Ad65214fB339087eF30D",
+      asset: "0xCAcd6fd266aF91b8AeD52aCCc382b4e165586E29",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCorefrxUSD",
+    }, // frxUSD
+    {
+      vault: "0x6D9e2Cdd61CaF69af99b275704B6e272C41c6718",
+      asset: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreEURC",
+    }, // EURC
+    {
+      vault: "0x82A9CC4656784E55Ef2E78F704028B5E1Bfc1732",
+      asset: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreWBTC",
+    }, // WBTC
+    {
+      vault: "0x33B41B74366F55327d959FfF6D6b6fBc2853dbB1",
+      asset: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCorecbBTC",
+    }, // cbBTC
+    {
+      vault: "0x7961F140B570490849DB878AE222570ea838799d",
+      asset: "0x8236a87084f8B84306f72007F36F2618A5634494",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreLBTC",
+    }, // LBTC
+    {
+      vault: "0x4E712562fcb5337011398B6C630f55b60641cd5e",
+      asset: "0x68749665FF8D2d112Fa859AA293F07A622782F38",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreXAUt",
+    }, // XAUt
+    {
+      vault: "0x0A65197b16C5969F92672051c9C9C0C75B369135",
+      asset: "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreAAVE",
+    }, // AAVE
+    {
+      vault: "0xE69C2045095C8Ab3E2a7d77de2328faE5baF797c",
+      asset: "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+      hub: "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9",
+      hubName: "CORE",
+      label: "waCoreLINK",
+    }, // LINK
+    {
+      vault: "0x90774889c22D2F2Adf44da1f04C7c95542590df4",
+      asset: "0x3de0ff76E8b528C092d47b9DaC775931cef80F49",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "aPlus-PT_sUSDE_7MAY2026",
+    }, // PT-sUSDE-7MAY2026
+    {
+      vault: "0xdd2Eb78BF9e6aC5068B95aD2d451e8c9Af10ac81",
+      asset: "0xAeBf0Bb9f57E89260d57f31AF34eB58657d96Ce0",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "aPlus-PT_USDE_7MAY2026",
+    }, // PT-USDe-7MAY2026
+    {
+      vault: "0x24f8c062e1E0451736C1D6E023510DA262a41df4",
+      asset: "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "waPlussUSDe",
+    }, // sUSDe
+    {
+      vault: "0x502Cd81da6a8F1785eb2eEE72713B7388E16A854",
+      asset: "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "waPlusUSDe",
+    }, // USDe
+    {
+      vault: "0xc94bdd83D2c7655C280655D60954e79E88D4F949",
+      asset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "waPlusUSDC",
+    }, // USDC
+    {
+      vault: "0xA54382db40EC602c0a173A08f9E86Ed40F9D4D10",
+      asset: "0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "waPlusGHO",
+    }, // GHO
+    {
+      vault: "0x80835EB50694EE0e519743f67e5401e6FD300006",
+      asset: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      hub: "0x06002e9c4412CB7814a791eA3666D905871E536A",
+      hubName: "PLUS",
+      label: "waPlusUSDT",
+    }, // USDT
+    {
+      vault: "0x2087513383330B961A3753B47627Bbf149F31c70",
+      asset: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimeWETH",
+    }, // WETH
+    {
+      vault: "0x5AE3d87De89CA6Ce501e8317887F71EABED69E18",
+      asset: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimeWBTC",
+    }, // WBTC
+    {
+      vault: "0xD38098faf52D8E915EdED84fBF30F81C17906938",
+      asset: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimecbBTC",
+    }, // cbBTC
+    {
+      vault: "0xFCD3D3C69cd032DE0cc78fE529B7447D2fe7F666",
+      asset: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimewstETH",
+    }, // wstETH
+    {
+      vault: "0x486415fb1F8b062c89ED548f871cf64304AACb31",
+      asset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimeUSDC",
+    }, // USDC
+    {
+      vault: "0x46c588DD8453aC259c1f6a54b4C9A93C2aC3762D",
+      asset: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimeUSDT",
+    }, // USDT
+    {
+      vault: "0x900fD46d565d1ac8995928c0179052ec02a6D0E1",
+      asset: "0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f",
+      hub: "0x943827DCA022D0F354a8a8c332dA1e5Eb9f9F931",
+      hubName: "PRIME",
+      label: "waPrimeGHO",
+    }, // GHO
+    {
+      vault: "0x7Df10B4A01350D2A1d95cFbE7c9207d7210A2663",
+      asset: "0xc1906aeCf868749a2DeE203F59b904c0cf212140",
+      hub: "0x62d63197660c080236193CA60b70E49A08E90368",
+      hubName: "GLOBAL_DOLLAR",
+      label: "waGlobalDollarPT_USDG_24SEP2026",
+    }, // PT-USDG-24SEP2026
+    {
+      vault: "0xaed7c529bD2878170B61C758DfAa215AC7a4FD07",
+      asset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      hub: "0x62d63197660c080236193CA60b70E49A08E90368",
+      hubName: "GLOBAL_DOLLAR",
+      label: "waGlobalDollarUSDC",
+    }, // USDC
+    {
+      vault: "0xa0e97e45C2f89003730E467Bd484fA3eEcE5B4Cf",
+      asset: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      hub: "0x62d63197660c080236193CA60b70E49A08E90368",
+      hubName: "GLOBAL_DOLLAR",
+      label: "waGlobalDollarUSDT",
+    }, // USDT
+    {
+      vault: "0x378B4a7c394E22bd562F66eB612165893533c124",
+      asset: "0xe343167631d89B6Ffc58B88d6b7fB0228795491D",
+      hub: "0x62d63197660c080236193CA60b70E49A08E90368",
+      hubName: "GLOBAL_DOLLAR",
+      label: "waGlobalDollarUSDG",
+    }, // USDG
+    {
+      vault: "0x6493a23874b506D5Bb6038ea44aE9CC74cD00849",
+      asset: "0x45804880De22913dAFE09f4980848ECE6EcbAf78",
+      hub: "0x62d63197660c080236193CA60b70E49A08E90368",
+      hubName: "GLOBAL_DOLLAR",
+      label: "waGlobalDollarPAXG",
+    }, // PAXG
+  ],
+  // Arc
+  5042: [
+    {
+      vault: "0x42EAB64310E1D1c66b4d8aF7C9C4ce253885eB83",
+      asset: "0x3600000000000000000000000000000000000000",
+      hub: "0x17288dfc86205301064577b98B02b81017e6F79C",
+      hubName: "CORE",
+      label: "waCoreUSDC",
+    }, // USDC
+    {
+      vault: "0x5A10b1533C0f1f181DC8a428BF5Eb58B08fc8d2c",
+      asset: "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+      hub: "0x17288dfc86205301064577b98B02b81017e6F79C",
+      hubName: "CORE",
+      label: "waCoreEURC",
+    }, // EURC
+    {
+      vault: "0x83D364DbAf4e7018E0b87dB3FaB3d1d8535a6F13",
+      asset: "0x171A4217b86A807A64eB94757Db6849fb4bDbAA0",
+      hub: "0x17288dfc86205301064577b98B02b81017e6F79C",
+      hubName: "CORE",
+      label: "waCorecirBTC",
+    }, // cirBTC
+    {
+      vault: "0xe8B890fea6e1E3915A337eD3136487F2f4f7e59D",
+      asset: "0x128cC466B61f542da60c70e3aA11c10e19B84EDB",
+      hub: "0x17288dfc86205301064577b98B02b81017e6F79C",
+      hubName: "CORE",
+      label: "waCoreWETH",
+    }, // WETH
+  ],
+  // Base
+  8453: [
+    {
+      vault: "0x7081CE7EB1282c53CF38EA9B622f6269cb8FeFDc",
+      asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      hub: "0xa4d5947Eb727A052bae69C593FfC84247EC9864E",
+      hubName: "EQUITIES",
+      label: "waEquitiesUSDC",
+    }, // USDC
+  ],
+  // Avalanche
+  43114: [
+    {
+      vault: "0x1604D602f8A05CBA2d8Ff5d14DE4C3498f15B6B4",
+      asset: "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoreWAVAX",
+    }, // WAVAX
+    {
+      vault: "0x7cd3Ccc737f442050a861EC6b00768AE96B2F58E",
+      asset: "0x152b9d0FdC40C096757F570A51E494bd4b943E50",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoreBTCb",
+    }, // BTC.b
+    {
+      vault: "0x01D7f7B7CE2123192fECC20bd1caF3e4d9e4C10D",
+      asset: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoreUSDC",
+    }, // USDC
+    {
+      vault: "0x2E4BA06fF97E10D09FA4F5a270e97301eae729A9",
+      asset: "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoreUSDT",
+    }, // USDt
+    {
+      vault: "0xF5c849468318c8D5670020fdb96ae135FED37070",
+      asset: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoreWETHe",
+    }, // WETH.e
+    {
+      vault: "0x7b538a1840EAf2Ed92EEB67eE744AE627335e201",
+      asset: "0xC891EB4cbdEFf6e073e859e987815Ed1505c2ACD",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoreEURC",
+    }, // EURC
+    {
+      vault: "0x6c27A7435040B7cC512319d5690BeEF234dfE76e",
+      asset: "0x2b2C81e08f1Af8835a78Bb2A90AE924ACE0eA4bE",
+      hub: "0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e",
+      hubName: "CORE",
+      label: "waCoresAVAX",
+    }, // sAVAX
+  ],
+};

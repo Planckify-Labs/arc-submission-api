@@ -694,19 +694,10 @@ registerProtocol({
 
 // ── Reserved slugs: claimed so a look-alike cannot take them ──────────────
 
-registerProtocol({
-  slug: "aave-v4",
-  aliases: ["aave-v4", "aave-v4-core"],
-  tier: "tier1",
-  execution: {
-    kind: "reserved",
-    reason:
-      "Aave v4 is a different interface (spec §1.5: 'defer'). Without this " +
-      "claim the registry's substring fallback sent v4 pools to the v3 Pool, " +
-      "which VALIDATED — wstETH/WBTC/weETH are real v3 reserves — so users " +
-      "would have been shown v4 and deposited into v3. Verified 2026-08-21.",
-  },
-});
+// `aave-v4` used to be reserved here: the substring fallback had routed v4
+// pools onto the v3 Pool, which validated. It is now claimed exactly by
+// `AaveV4Resolver` (aave-v4.resolver.ts), which deposits through Aave's own
+// TokenizationSpokes matched on asset AND hub. See that file.
 
 /**
  * Slugs a look-alike family was already answering for, found by the dry run's

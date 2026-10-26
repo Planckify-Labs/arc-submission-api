@@ -37,6 +37,7 @@ import {
 } from "./defillama-pool-address";
 import { EmberResolver } from "./ember.resolver";
 import { TIER1_ERC4626_RESOLVERS } from "./erc4626-family.resolver";
+import { AaveV4Resolver } from "./aave-v4.resolver";
 import { MorphoResolver, YearnResolver } from "./erc4626.resolver";
 import {
   familyEnabled,
@@ -146,6 +147,7 @@ export function bootTargetResolvers(): void {
   if (booted) return;
   bootCandidateSources();
   registerResolver(MorphoResolver);
+  registerResolver(AaveV4Resolver);
   registerResolver(YearnResolver);
   registerResolver(AaveResolver);
   // Sui — Ember Vaults (generic tokenized-vault family; multi-vault, so the

@@ -17,6 +17,8 @@ import {
 } from "./protocol-manifest";
 import { EVM_TARGET_KINDS } from "./types";
 import "./protocols";
+import { bootTargetResolvers } from "./bootstrap";
+import { getResolverForProject } from "./registry";
 
 const MANIFESTS = allProtocolManifests();
 
@@ -130,9 +132,16 @@ describe("reserved slugs", () => {
     // v4 pool resolved to the Aave v3 Pool — and VALIDATED, because wstETH,
     // WBTC and weETH are genuinely listed v3 reserves. Users would have been
     // shown v4 and deposited into v3. Five pools, $168M, all silently wrong.
-    const v4 = MANIFESTS.find((m) => m.slug === "aave-v4");
-    expect(v4?.execution.kind).toBe("reserved");
-    expect(v4?.withheld).toBeUndefined(); // withheld would skip registration
+    //
+    // Since 2026-10-26 the claim is a real resolver, not a reservation: v4
+    // deposits through Aave's own TokenizationSpokes (aave-v4.resolver.ts).
+    // What must hold is unchanged: "aave-v4" is answered EXACTLY, and never by
+    // the v3 family.
+    expect(MANIFESTS.find((m) => m.slug === "aave-v4")).toBeUndefined();
+    bootTargetResolvers();
+    const resolver = getResolverForProject("aave-v4");
+    expect(resolver?.family).toBe("aave-v4");
+    expect(getResolverForProject("aave-v4-core")?.family).toBe("aave-v4");
   });
 
   it("makes every reserved slug explain what it is protecting against", () => {

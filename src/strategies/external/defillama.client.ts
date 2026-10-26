@@ -543,7 +543,14 @@ export class DeFiLlamaClient {
    */
   meetsTvlFloor(pool: DeFiLlamaYieldPool): boolean {
     const row = findChainByName(pool.chain);
-    return !!row && pool.tvlUsd >= this.minTvlForChain(row);
+    return (
+      !!row &&
+      pool.tvlUsd >= this.minTvlForChain(row) &&
+      // The feed's other admission rule: a pool paying nothing is not a
+      // yield option (Aave v4 lists cirBTC on Arc at 0.00%).
+      typeof pool.apy === "number" &&
+      pool.apy > 0
+    );
   }
 
   private filterPools(

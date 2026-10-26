@@ -156,5 +156,8 @@ describe("DeFiLlamaClient.meetsTvlFloor", () => {
     expect(c.meetsTvlFloor(scored({ chain: "Nowhere", tvlUsd: 1e9 }))).toBe(
       false,
     );
+    expect(
+      c.meetsTvlFloor(scored({ chain: "Arc", tvlUsd: 93_000_000, apy: 0 })),
+    ).toBe(false);
   });
 });
