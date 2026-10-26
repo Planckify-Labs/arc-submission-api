@@ -371,7 +371,18 @@ describe("BridgeService same-chain routing", () => {
       { body: { success: true, data: towerBuild() } },
     ]);
     registerBridgeAdapter(adapter());
-    const result = await new BridgeService().quote(request());
+    // Tower is a policy-only lane: it serves a preferred-symbol swap only
+    // when one side is a token we vouch for, as Circle's own pins do in
+    // production.
+    const circle = {
+      bridgeChains: () => [
+        { type: "evm", chainId: 5042, usdcAddress: USDC, eurcAddress: EURC },
+      ],
+    };
+    const result = await new BridgeService(
+      undefined,
+      circle as unknown as ConstructorParameters<typeof BridgeService>[1],
+    ).quote(request());
     expect(result.routable).toBe(true);
   });
 });
