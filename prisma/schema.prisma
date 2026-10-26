@@ -1551,6 +1551,7 @@ model OpportunityCache {
   poolMeta             String? // DeFiLlama vault/market name or fee tier ("Steakhouse USDC", "0.05%") — disambiguates sibling pools sharing (protocol, asset, chain). Free-text label, never an address. (pool-level deposits spec §4.2)
   depositTarget        Json? // resolved DepositTarget discriminated union (spec §4.1); null = unresolved → the row degrades to the "manual" deep-link path. Written by the PoolTargetResolver registry at score time.
   targetResolvedAt     DateTime? // when depositTarget was last resolved + on-chain validated; drives periodic re-validation
+  riskSignals          Json? // exit-side risk read at score time from the market API (exploits, lending liquidity, LST peg) and the policy verdict on it (depositBlock + warning codes); null = no signals (market API not configured or unreachable). See market-risk.client.ts.
   apy                  Decimal
   apy7dAvg             Decimal
   apyStddev30d         Decimal

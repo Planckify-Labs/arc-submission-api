@@ -10,6 +10,8 @@ import {
 } from "../external/defillama.client";
 import { ScoringService } from "../scoring/scoring.service";
 import { oppRowCacheKey } from "../targets/cache-keys";
+import type { DepositTarget } from "../targets/types";
+import { MarketRiskClient } from "../external/market-risk.client";
 import { resolveChainIdentity } from "../targets/chain-directory";
 import { TargetResolverService } from "../targets/target-resolver.service";
 
@@ -182,6 +184,7 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
     private readonly defillama: DeFiLlamaClient,
     private readonly targetResolver: TargetResolverService,
     private readonly valkey: ValkeyService,
+    private readonly marketRisk: MarketRiskClient,
   ) {
     super();
   }
@@ -255,6 +258,19 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
       const targetJson = decision.target;
       const targetResolvedAt = decision.resolvedAt;
 
+      // Exit-side risk (exploits, lending liquidity, LST peg) for the target
+      // the row will carry. Never throws: no signals is "nothing claimed".
+      const finalTarget =
+        targetJson && typeof targetJson === "object"
+          ? (targetJson as unknown as DepositTarget)
+          : null;
+      const riskSignals = await this.marketRisk
+        .forPool(pool, finalTarget)
+        .catch(() => null);
+      const riskJson = riskSignals
+        ? (riskSignals as unknown as Prisma.InputJsonValue)
+        : Prisma.DbNull;
+
       // Upsert into OpportunityCache
       await this.prisma.opportunityCache.upsert({
         where: { poolId: pool.pool },
@@ -268,6 +284,7 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
           poolMeta,
           depositTarget: targetJson,
           targetResolvedAt,
+          riskSignals: riskJson,
           apy: pool.apy,
           apy7dAvg: pool.apy7d || pool.apy,
           apyStddev30d: 0,
@@ -290,6 +307,7 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
           poolMeta,
           depositTarget: targetJson,
           targetResolvedAt,
+          riskSignals: riskJson,
           apy: pool.apy,
           apy7dAvg: pool.apy7d || pool.apy,
           apyStddev30d: 0,
@@ -313,6 +331,9 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
             safetyScore: dimensions.protocolSafety,
             auditCount: protocolMetadata.auditCount,
             appUrl: protocolMetadata.appUrl,
+            ...(riskSignals
+              ? { exploitHistoryFlag: riskSignals.exploit !== undefined }
+              : {}),
             computedAt: new Date(),
           },
           create: {
@@ -320,7 +341,7 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
             safetyScore: dimensions.protocolSafety,
             auditCount: protocolMetadata.auditCount,
             protocolAgeDays: 0,
-            exploitHistoryFlag: false,
+            exploitHistoryFlag: riskSignals?.exploit !== undefined,
             tvlTrendBps: 0,
             appUrl: protocolMetadata.appUrl,
             computedAt: new Date(),
