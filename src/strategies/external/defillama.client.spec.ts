@@ -4,7 +4,7 @@ import {
   type ChainDirectoryRow,
   loadChainDirectory,
 } from "../targets/chain-directory";
-import { DeFiLlamaClient } from "./defillama.client";
+import { DeFiLlamaClient, type DeFiLlamaYieldPool } from "./defillama.client";
 
 /**
  * Which DeFiLlama pools the ingester keeps. Chains come from the chain
@@ -130,5 +130,31 @@ describe("DeFiLlamaClient.filterPools", () => {
     } finally {
       process.env.STRATEGIES_CHAIN_ALIASES = before;
     }
+  });
+});
+
+describe("DeFiLlamaClient.meetsTvlFloor", () => {
+  beforeEach(() => {
+    loadChainDirectory([
+      row({ chainId: 5042, name: "Arc" }),
+      row({ name: "Stellar", family: "STELLAR" }),
+    ]);
+  });
+
+  const scored = (o: Partial<FeedPool>) =>
+    pool(o) as unknown as DeFiLlamaYieldPool;
+
+  it("applies the feed's per-chain floor to pools from other sources", () => {
+    const c = client();
+    expect(c.meetsTvlFloor(scored({ chain: "Arc", tvlUsd: 75_000_000 }))).toBe(
+      true,
+    );
+    expect(c.meetsTvlFloor(scored({ chain: "Arc", tvlUsd: 16 }))).toBe(false);
+    expect(c.meetsTvlFloor(scored({ chain: "Stellar", tvlUsd: 300_000 }))).toBe(
+      true,
+    );
+    expect(c.meetsTvlFloor(scored({ chain: "Nowhere", tvlUsd: 1e9 }))).toBe(
+      false,
+    );
   });
 });

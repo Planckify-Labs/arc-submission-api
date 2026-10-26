@@ -535,6 +535,17 @@ export class DeFiLlamaClient {
     return row.family === "EVM" ? this.minTvlUsd : this.minTvlUsdNonEvm;
   }
 
+  /**
+   * The same per-chain TVL floor the feed is filtered by, for pools that
+   * arrive from elsewhere (protocol APIs via the market API). Without it a
+   * $16 vault was listed in-app next to $75M ones: too small to price
+   * honestly, and cheap to manipulate.
+   */
+  meetsTvlFloor(pool: DeFiLlamaYieldPool): boolean {
+    const row = findChainByName(pool.chain);
+    return !!row && pool.tvlUsd >= this.minTvlForChain(row);
+  }
+
   private filterPools(
     pools: DeFiLlamaPoolsResponse["data"],
   ): DeFiLlamaYieldPool[] {

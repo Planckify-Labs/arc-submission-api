@@ -57,7 +57,9 @@ export class DefiLlamaPollProcessor extends WorkerHost {
       });
       // Pools read from protocols' own APIs (via the market API) on chains the
       // feed has none for, e.g. Morpho Vault V2 on Arc. Never sinks the poll.
-      const sourcedPools = await this.protocolPools.getPools();
+      const sourcedPools = (await this.protocolPools.getPools()).filter((p) =>
+        this.defillama.meetsTvlFloor(p),
+      );
       const pools = [...feedPools, ...lstPools, ...sourcedPools];
       this.logger.log(
         `Fetched ${feedPools.length} pools from DeFiLlama (+${lstPools.length} synthesized Sui LST, +${sourcedPools.length} from protocol APIs)`,
