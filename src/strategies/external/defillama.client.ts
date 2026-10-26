@@ -29,6 +29,12 @@ export interface DeFiLlamaYieldPool {
   /** Underlying **asset** contract(s) the user deposits (ERC-20 / SPL mint /
    *  Sui coin type). Never the vault/market. Matching key + fills assetContract. */
   underlyingTokens?: string[];
+  /** DeFiLlama's own APY statistics for the pool: 30-day mean APY, the
+   *  standard deviation of its APY history, and its outlier flag. Inputs to
+   *  the tier rules (scoring.service.ts). */
+  apyMean30d?: number;
+  sigma?: number;
+  outlier?: boolean;
 }
 
 interface DeFiLlamaPoolsResponse {
@@ -49,6 +55,8 @@ interface DeFiLlamaPoolsResponse {
     apyPct7D?: number | null;
     poolMeta?: string | null;
     underlyingTokens?: string[] | null;
+    sigma?: number | null;
+    outlier?: boolean | null;
   }>;
 }
 
@@ -110,10 +118,11 @@ interface DeFiLlamaProtocol {
 // deposits spec §3/§4.2 — the resolver's matching keys). Bumped so the new
 // fields are populated on the next poll instead of serving the v4 shape that
 // dropped them.
+// v7: carries apyMean30d / sigma / outlier for the tier rules.
 // v6: chains come from the chain directory instead of a literal list, and
 // each chain's own Token-row symbols are admitted. Bumped so Monad/Stellar
 // pools arrive on the next poll instead of after the v5 set expires.
-const POOLS_CACHE_KEY = "defillama:pools:filtered:v6";
+const POOLS_CACHE_KEY = "defillama:pools:filtered:v7";
 const DEFAULT_POOLS_CACHE_TTL_SEC = 30 * 60; // 30 min — matches the cron tick
 const DEFAULT_PROTOCOL_CACHE_TTL_SEC = 6 * 60 * 60; // 6 h — slow-moving metadata
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -215,6 +224,9 @@ function toYieldPool(
     underlyingTokens: Array.isArray(p.underlyingTokens)
       ? p.underlyingTokens
       : undefined,
+    apyMean30d: typeof p.apyMean30d === "number" ? p.apyMean30d : undefined,
+    sigma: typeof p.sigma === "number" ? p.sigma : undefined,
+    outlier: typeof p.outlier === "boolean" ? p.outlier : undefined,
   };
 }
 

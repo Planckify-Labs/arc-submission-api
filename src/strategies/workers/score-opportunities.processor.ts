@@ -149,8 +149,8 @@ export interface PreviousScore {
  * Keep the previous score when this pass could not read the protocol's
  * metadata.
  *
- * `mapPoolToDimensions` charges `protocolSafety = auditCount > 0 ? 85 : 40`,
- * and a failed lookup returns `auditCount: 0`. So a network timeout does not
+ * The tier rules read `auditCount: 0` as "unaudited" (aggressive), and a
+ * failed lookup returns `auditCount: 0`. So a network timeout does not
  * merely lose information — it actively asserts "unaudited" and takes 45 points
  * off a dimension. That moves the composite score, which moves the TIER, and
  * the opportunity list is filtered by tier. The pool then vanishes from the
@@ -200,12 +200,6 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
         pool.project,
       );
 
-      const dimensions = this.scoringService.mapPoolToDimensions(
-        pool,
-        protocolMetadata,
-      );
-      const fresh = this.scoringService.calculateScore(dimensions);
-
       // The chain directory is DB-backed, so make sure it is loaded before the
       // (synchronous) name → namespace/chainId lookup below.
       await this.targetResolver.ensureChainDirectory();
@@ -228,24 +222,10 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
             targetResolvedAt: true,
             score: true,
             tier: true,
+            tierReasons: true,
           },
         })
         .catch(() => null);
-
-      const scoreDecision = decideScoreWrite(
-        fresh,
-        protocolMetadata.degraded,
-        previous ? { score: previous.score, tier: previous.tier } : null,
-      );
-      if (scoreDecision.keptPrevious) {
-        this.logger.warn(
-          `[score] pool ${pool.pool} (${pool.project}) scored with DEGRADED metadata ` +
-            `(the DeFiLlama lookup failed, so auditCount reads 0) — keeping the previous ` +
-            `score ${previous?.score}/${previous?.tier} instead of letting a network ` +
-            `failure re-tier the pool out of the user's list.`,
-        );
-      }
-      const { score, tier } = scoreDecision;
 
       const decision = decideTargetWrite(depositTarget, previous, Date.now());
       if (decision.keptPrevious) {
@@ -271,6 +251,36 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
         ? (riskSignals as unknown as Prisma.InputJsonValue)
         : Prisma.DbNull;
 
+      // Tier by rules over the facts gathered above (scoring.service.ts). A
+      // failed metadata read leaves audits UNKNOWN, never "unaudited".
+      const fresh = this.scoringService.assess({
+        pool,
+        auditCount: protocolMetadata.degraded
+          ? null
+          : protocolMetadata.auditCount,
+        target: finalTarget,
+        riskSignals,
+      });
+      const scoreDecision = decideScoreWrite(
+        fresh,
+        protocolMetadata.degraded,
+        previous ? { score: previous.score, tier: previous.tier } : null,
+      );
+      if (scoreDecision.keptPrevious) {
+        this.logger.warn(
+          `[score] pool ${pool.pool} (${pool.project}) scored with DEGRADED metadata ` +
+            `(the DeFiLlama lookup failed) — keeping the previous score ` +
+            `${previous?.score}/${previous?.tier} instead of letting a network ` +
+            `failure re-tier the pool.`,
+        );
+      }
+      const { score, tier } = scoreDecision;
+      const tierReasons = (
+        scoreDecision.keptPrevious && previous?.tierReasons != null
+          ? previous.tierReasons
+          : fresh.reasons
+      ) as Prisma.InputJsonValue;
+
       // Upsert into OpportunityCache
       await this.prisma.opportunityCache.upsert({
         where: { poolId: pool.pool },
@@ -287,12 +297,13 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
           riskSignals: riskJson,
           apy: pool.apy,
           apy7dAvg: pool.apy7d || pool.apy,
-          apyStddev30d: 0,
+          apyStddev30d: pool.sigma ?? 0,
           tvlUsd: pool.tvlUsd,
           tvl7dDelta: 0,
           ilExposure: pool.ilRisk === "yes",
           score,
           tier,
+          tierReasons,
           raw: pool as unknown as Prisma.InputJsonValue,
           scoredAt: new Date(),
         },
@@ -310,12 +321,13 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
           riskSignals: riskJson,
           apy: pool.apy,
           apy7dAvg: pool.apy7d || pool.apy,
-          apyStddev30d: 0,
+          apyStddev30d: pool.sigma ?? 0,
           tvlUsd: pool.tvlUsd,
           tvl7dDelta: 0,
           ilExposure: pool.ilRisk === "yes",
           score,
           tier,
+          tierReasons,
           raw: pool as unknown as Prisma.InputJsonValue,
           scoredAt: new Date(),
         },
@@ -328,7 +340,8 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
         .upsert({
           where: { protocolSlug: pool.project },
           update: {
-            safetyScore: dimensions.protocolSafety,
+            // Legacy column with no readers; the tier rules replaced it.
+            safetyScore: protocolMetadata.auditCount > 0 ? 85 : 40,
             auditCount: protocolMetadata.auditCount,
             appUrl: protocolMetadata.appUrl,
             ...(riskSignals
@@ -338,7 +351,8 @@ export class ScoreOpportunitiesProcessor extends WorkerHost {
           },
           create: {
             protocolSlug: pool.project,
-            safetyScore: dimensions.protocolSafety,
+            // Legacy column with no readers; the tier rules replaced it.
+            safetyScore: protocolMetadata.auditCount > 0 ? 85 : 40,
             auditCount: protocolMetadata.auditCount,
             protocolAgeDays: 0,
             exploitHistoryFlag: riskSignals?.exploit !== undefined,
