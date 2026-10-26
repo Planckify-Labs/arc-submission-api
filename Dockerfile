@@ -1,13 +1,15 @@
 # Build stage
 FROM node:22-alpine AS builder
 
-# Install pnpm — pin major to match lockfileVersion '9.0' (pnpm 10.x)
-RUN corepack enable && corepack prepare pnpm@10 --activate
+# pnpm version comes from package.json "packageManager". node:22's bundled
+# corepack predates pnpm 12's native-binary layout (looks for bin/pnpm.cjs),
+# so upgrade corepack before enabling it.
+RUN npm install -g corepack@0.36.0 && corepack enable
 
 WORKDIR /app
 
 # Copy package files
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # Install all dependencies (including dev for building)
 RUN pnpm install --frozen-lockfile

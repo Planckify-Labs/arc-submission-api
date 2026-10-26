@@ -1,6 +1,7 @@
 {
   "name": "takumipay-api",
   "version": "0.0.1",
+  "packageManager": "pnpm@12.15.0",
   "description": "",
   "author": "",
   "private": true,
