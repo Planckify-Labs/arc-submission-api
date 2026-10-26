@@ -28,6 +28,14 @@ export const AAVE_V3_POOLS: SingletonBook = {
   56: "0x6807dc923806fE8Fd134338EABCA509979a7e0cB", // BNB Chain
   59144: "0xc47b8C00b0f69a36fa203Ffeac0334874574a8Ac", // Linea
   534352: "0x11fCfe756c05AD438e312a7fd934381537D3cFfe", // Scroll
+  // Monad, added 2026-10-26 WITHOUT a human countersignature (owner waiver; see
+  // docs/runbooks/defi-address-book-security-signoff.md, "Automated-evidence
+  // pins"). Source: bgd-labs/aave-address-book src/AaveV3Monad.sol (POOL and
+  // POOL_ADDRESSES_PROVIDER 0x34793Fb9935F7bB5E5aE920fb963F39063E7A615).
+  // Verified on chain: the Pool's ADDRESSES_PROVIDER() is that provider, the
+  // provider's getPool() is this Pool, getMarketId() is "Aave V3 Monad", and
+  // all 11 aave-v3 Monad pools DeFiLlama lists have their asset as a reserve.
+  143: "0x69a5F9AD4f96ebf0a0C792dD42a01cC5C0102fef", // Monad
 };
 
 /**
