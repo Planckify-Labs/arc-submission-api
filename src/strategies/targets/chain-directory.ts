@@ -36,6 +36,12 @@ export interface ChainDirectoryRow {
   isTestnet: boolean;
   /** Native coin metadata, when the chain's native token row is known. */
   nativeCurrency?: { name: string; symbol: string; decimals: number };
+  /**
+   * Symbols of the chain's active `Token` rows — the assets the app lists on
+   * this chain. The yield ingester admits pools for them, so a chain's own
+   * assets (Monad's AUSD/MON, Stellar's XLM) need a token row, not a code edit.
+   */
+  assetSymbols?: string[];
 }
 
 /**

@@ -26,7 +26,10 @@
 
 import type { DeFiLlamaYieldPool } from "../external/defillama.client";
 import { type PinnedVault, pinnedVaults } from "./address-book";
-import { candidateAddressForPool } from "./candidates/registry";
+import {
+  candidateForPool,
+  independentSourcesAgree,
+} from "./candidates/registry";
 import type {
   Address,
   DepositTarget,
@@ -170,8 +173,13 @@ export function discoveredVaultResolver(config: {
       if (!underlying) return null;
       if (pool.tvlUsd < minTvl) return null;
 
-      const vault = await candidateAddressForPool(pool, ctx);
-      if (!vault) return null;
+      const answer = await candidateForPool(pool, ctx);
+      if (!answer) return null;
+      // A vault's catalog key IS the vault, so every vault-keyed source can
+      // judge this answer; two that disagree mean one is wrong about where the
+      // money goes, and neither is believed.
+      if (!(await independentSourcesAgree(pool, ctx, answer))) return null;
+      const vault = answer.address;
 
       const target: DepositTarget = {
         kind: "erc4626",

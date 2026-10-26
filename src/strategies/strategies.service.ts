@@ -18,6 +18,7 @@ import {
 import { COMET_MARKETS, cometMarkets } from "./targets/address-book";
 import { OPP_ROW_CACHE_TTL_SEC, oppRowCacheKey } from "./targets/cache-keys";
 import { findChainById } from "./targets/chain-directory";
+import { canonicalizeWalletAddress } from "../utils/address";
 import { getPublicClientForChain } from "./targets/rpc";
 
 /** Minimal Comet reads needed for discovery — balance + underlying identity. */
@@ -157,9 +158,7 @@ export class StrategiesService {
 
   async getStrategy(walletAddress: string) {
     const strategy = await this.prisma.userStrategy.findFirst({
-      where: {
-        walletAddress: walletAddress.toLowerCase(),
-      },
+      where: strategyWalletWhere(walletAddress),
       include: {
         positions: {
           where: { status: "active" },
@@ -183,9 +182,7 @@ export class StrategiesService {
     dto: CreateStrategyDto,
   ) {
     const existing = await this.prisma.userStrategy.findFirst({
-      where: {
-        walletAddress: walletAddress.toLowerCase(),
-      },
+      where: strategyWalletWhere(walletAddress),
     });
 
     if (existing) {
@@ -198,7 +195,7 @@ export class StrategiesService {
     const strategy = await this.prisma.userStrategy.create({
       data: {
         userId,
-        walletAddress: walletAddress.toLowerCase(),
+        walletAddress: canonicalizeWalletAddress(walletAddress),
         namespace: dto.namespace,
         tier: dto.tier,
         assetPreferences: dto.assetPreferences,
@@ -219,9 +216,7 @@ export class StrategiesService {
 
   async updateStrategy(walletAddress: string, dto: UpdateStrategyDto) {
     const strategy = await this.prisma.userStrategy.findFirst({
-      where: {
-        walletAddress: walletAddress.toLowerCase(),
-      },
+      where: strategyWalletWhere(walletAddress),
     });
 
     if (!strategy) {
@@ -241,9 +236,7 @@ export class StrategiesService {
 
   async deleteStrategy(walletAddress: string) {
     const strategy = await this.prisma.userStrategy.findFirst({
-      where: {
-        walletAddress: walletAddress.toLowerCase(),
-      },
+      where: strategyWalletWhere(walletAddress),
     });
 
     if (!strategy) {
@@ -275,13 +268,12 @@ export class StrategiesService {
     walletAddress: string,
     filter: OpportunityFilter = {},
   ) {
-    const wallet = walletAddress.toLowerCase();
     this.logger.log(
-      `[getOpportunities] wallet=${wallet} filter=${JSON.stringify(filter)}`,
+      `[getOpportunities] wallet=${walletAddress} filter=${JSON.stringify(filter)}`,
     );
 
     const strategy = await this.prisma.userStrategy.findFirst({
-      where: { walletAddress: wallet },
+      where: strategyWalletWhere(walletAddress),
     });
 
     const effectiveTier = strategy?.tier ?? filter.tier;
@@ -311,7 +303,12 @@ export class StrategiesService {
           ? [effectiveTier]
           : [];
 
-    const where: Record<string, unknown> = {};
+    // Never show a pool whose numbers we have not refreshed recently. Rows
+    // are re-scored every poll; one this old has dropped out of DeFiLlama's
+    // feed or stopped scoring, and its APY/TVL describe the past.
+    const where: Record<string, unknown> = {
+      scoredAt: { gte: new Date(Date.now() - opportunityMaxAgeMs()) },
+    };
     if (allowedTiers.length > 0) where.tier = { in: allowedTiers };
     if (filter.assetSymbol) where.assetSymbol = filter.assetSymbol;
     if (filter.chainId !== undefined) where.chainId = filter.chainId;
@@ -932,15 +929,13 @@ export class StrategiesService {
    * onboarded. Non-throwing twin of `getStrategy`.
    *
    * Public because `RecurringInvestService` needs it and must NOT reach the
-   * `UserStrategy` table itself: that table stores its `walletAddress`
-   * lowercased (a convention predating the per-encoding canonicalization
-   * rule), and a `.toLowerCase()` inside the DCA layer is exactly the smell
-   * quick-invest §12.3a Rule 2 warns about. Keeping the fold here means the
-   * legacy convention stays owned by the module that owns the table.
+   * `UserStrategy` table itself: how that table keys wallets (canonical, plus
+   * legacy lowercased rows, see `strategyWalletWhere`) stays owned by the
+   * module that owns the table.
    */
   async getSavedTier(walletAddress: string): Promise<string | null> {
     const strategy = await this.prisma.userStrategy.findFirst({
-      where: { walletAddress: walletAddress.toLowerCase() },
+      where: strategyWalletWhere(walletAddress),
       select: { tier: true },
     });
     return strategy?.tier ?? null;
@@ -961,7 +956,7 @@ export class StrategiesService {
     fallbackTier: string,
   ) {
     const existing = await this.prisma.userStrategy.findFirst({
-      where: { walletAddress: walletAddress.toLowerCase() },
+      where: strategyWalletWhere(walletAddress),
     });
     if (existing) return existing;
 
@@ -978,7 +973,7 @@ export class StrategiesService {
     return this.prisma.userStrategy.create({
       data: {
         userId,
-        walletAddress: walletAddress.toLowerCase(),
+        walletAddress: canonicalizeWalletAddress(walletAddress),
         namespace,
         tier,
         assetPreferences: ["stable"],
@@ -1192,4 +1187,28 @@ export class StrategiesService {
     const [enriched] = await this.attachCurrentApy([updated]);
     return { ...enriched, claimedAt: new Date() };
   }
+}
+
+/**
+ * `UserStrategy` lookup by wallet. Rows are written canonical per encoding
+ * (`canonicalizeWalletAddress`: EVM checksummed, Sui folded, Solana/Stellar
+ * verbatim). Rows written before that were blanket-lowercased, which is
+ * lossy for base58/base32, so the lowercase form is still matched: those rows
+ * keep resolving with no backfill (prod runs `prisma db push`, which never
+ * runs migration data).
+ */
+function strategyWalletWhere(walletAddress: string) {
+  const canonical = canonicalizeWalletAddress(walletAddress);
+  const legacy = walletAddress.trim().toLowerCase();
+  return {
+    walletAddress: {
+      in: canonical === legacy ? [canonical] : [canonical, legacy],
+    },
+  };
+}
+
+/** How old a scored opportunity may be and still be listed (default 48h). */
+function opportunityMaxAgeMs(): number {
+  const hours = Number(process.env.DEFI_OPPORTUNITY_MAX_AGE_HOURS);
+  return (Number.isFinite(hours) && hours > 0 ? hours : 48) * 3600 * 1000;
 }

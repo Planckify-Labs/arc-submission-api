@@ -1,6 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ValkeyService } from "../../valkey/valkey.service";
+import {
+  type ChainDirectoryRow,
+  chainDirectorySize,
+  findChainByName,
+} from "../targets/chain-directory";
 
 export interface DeFiLlamaYieldPool {
   pool: string;
@@ -105,7 +110,10 @@ interface DeFiLlamaProtocol {
 // deposits spec §3/§4.2 — the resolver's matching keys). Bumped so the new
 // fields are populated on the next poll instead of serving the v4 shape that
 // dropped them.
-const POOLS_CACHE_KEY = "defillama:pools:filtered:v5";
+// v6: chains come from the chain directory instead of a literal list, and
+// each chain's own Token-row symbols are admitted. Bumped so Monad/Stellar
+// pools arrive on the next poll instead of after the v5 set expires.
+const POOLS_CACHE_KEY = "defillama:pools:filtered:v6";
 const DEFAULT_POOLS_CACHE_TTL_SEC = 30 * 60; // 30 min — matches the cron tick
 const DEFAULT_PROTOCOL_CACHE_TTL_SEC = 6 * 60 * 60; // 6 h — slow-moving metadata
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -122,23 +130,20 @@ const DEFAULT_MAX_POOLS_PER_CHAIN = 50;
 // their own lower floor; EVM keeps DEFAULT_MIN_TVL_USD. Keyed by chain, not
 // protocol — no venue is special-cased.
 const DEFAULT_MIN_TVL_USD_NON_EVM = 250_000;
-const NON_EVM_CHAINS = new Set(["solana", "sui"]);
 
-// Chains we score (mirrors the wallet's supported namespaces + L2s users hold).
-const RELEVANT_CHAINS = new Set([
-  "ethereum",
-  "arbitrum",
-  "optimism",
-  "base",
-  "polygon",
-  "avalanche",
-  "bsc",
-  "solana",
-  "sui",
-]);
+// There is deliberately NO chain list here. Which chains we score is the
+// chain directory (active mainnet `Blockchain` rows, see chain-directory.ts),
+// the same snapshot the scorer maps `pool.chain` through. A literal list used
+// to sit here and silently overrode the table: Monad and Stellar had rows, an
+// app surface and real DeFiLlama pools (71 over $1M on Monad), yet the agent
+// answered "no options" on both because their pools were dropped before the
+// data-driven half of the pipeline ever saw them. It also admitted Optimism,
+// which has no row, so its pools were scored as `eip155` chainId 0.
 
-// Symbols we score. DeFiLlama uses things like "USDC", "STETH",
-// "USDC-USDT" for LP pools; substring match keeps multi-asset pools in.
+// Symbols we score on every chain, ON TOP OF each chain's own listed assets
+// (its `Token` rows, see `chainAssetTokens`). DeFiLlama uses things like
+// "USDC", "STETH", "USDC-USDT" for LP pools; substring match keeps multi-asset
+// pools in.
 const RELEVANT_SYMBOL_TOKENS = [
   "USDC",
   "USDT",
@@ -163,6 +168,55 @@ const RELEVANT_SYMBOL_TOKENS = [
   // match adds no non-Sui-chain pools (verified against the live feed).
   "SUI",
 ];
+
+/**
+ * Shortest token-table symbol used as a substring match. The match has to be a
+ * substring (DeFiLlama names vaults "SYRUPUSDC", "EARNAUSD"), and at one or two
+ * characters that matches nearly everything: a chain whose native token is "S"
+ * would admit every pool on it.
+ */
+const MIN_ASSET_SYMBOL_LENGTH = 3;
+
+/** The chain's own listed assets, as substring tokens for `filterPools`. */
+function chainAssetTokens(row: ChainDirectoryRow): string[] {
+  return (row.assetSymbols ?? [])
+    .map((symbol) => symbol.trim().toUpperCase())
+    .filter((symbol) => symbol.length >= MIN_ASSET_SYMBOL_LENGTH);
+}
+
+/** A chain we have an active mainnet row for — the only pools we score. */
+function isDirectoryMainnet(chain: string | undefined): boolean {
+  const row = findChainByName(chain);
+  return !!row && !row.isTestnet;
+}
+
+function toYieldPool(
+  p: DeFiLlamaPoolsResponse["data"][number],
+): DeFiLlamaYieldPool {
+  return {
+    pool: p.pool,
+    chain: p.chain,
+    project: p.project,
+    symbol: p.symbol,
+    tvlUsd: p.tvlUsd,
+    apy: p.apy as number,
+    apy7d:
+      (typeof p.apyPct7D === "number"
+        ? (p.apy as number) + p.apyPct7D
+        : undefined) ??
+      p.apyMean30d ??
+      undefined,
+    apyBase: p.apyBase ?? undefined,
+    apyReward: p.apyReward ?? undefined,
+    ilRisk: p.ilRisk ?? "no",
+    exposure: p.exposure ?? "single",
+    // Pool-level deposits (spec §3): carry the resolver's matching keys.
+    poolMeta: p.poolMeta ?? null,
+    underlyingTokens: Array.isArray(p.underlyingTokens)
+      ? p.underlyingTokens
+      : undefined,
+  };
+}
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -226,6 +280,11 @@ export class DeFiLlamaClient {
   private readonly minTvlUsdNonEvm: number;
   private readonly maxPools: number;
   private readonly maxPoolsPerChain: number;
+  /** The whole `/pools` feed from the last network fetch, for `feedPool`. */
+  private fullFeed: {
+    at: number;
+    byId: Map<string, DeFiLlamaYieldPool>;
+  } | null = null;
   /**
    * One in-flight request per protocol slug.
    *
@@ -317,6 +376,13 @@ export class DeFiLlamaClient {
       }
     }
 
+    // Every pool is kept or dropped by its chain-directory row. Filtering
+    // against an unloaded directory would drop all of them and then cache that
+    // empty set for a full TTL, so fail the tick instead; BullMQ retries it.
+    if (chainDirectorySize() === 0) {
+      throw new Error("Chain directory not loaded; skipping DeFiLlama poll");
+    }
+
     this.logger.log(
       `[getYieldPools] -> DeFiLlama /pools (hasKey=${Boolean(this.apiKey)})`,
     );
@@ -330,6 +396,14 @@ export class DeFiLlamaClient {
         throw new Error(`Unexpected response shape (status=${raw?.status})`);
       }
 
+      this.fullFeed = {
+        at: Date.now(),
+        byId: new Map(
+          raw.data
+            .filter((p) => p?.pool && isDirectoryMainnet(p.chain))
+            .map((p) => [p.pool, toYieldPool(p)]),
+        ),
+      };
       const filtered = this.filterPools(raw.data);
       this.logger.log(
         `[getYieldPools] <- DeFiLlama returned ${raw.data.length} pools (kept ${filtered.length}) in ${Date.now() - started}ms`,
@@ -445,8 +519,8 @@ export class DeFiLlamaClient {
   }
 
   /** Per-chain TVL floor: non-EVM chains get the lower threshold. */
-  private minTvlForChain(chain: string): number {
-    return NON_EVM_CHAINS.has(chain) ? this.minTvlUsdNonEvm : this.minTvlUsd;
+  private minTvlForChain(row: ChainDirectoryRow): number {
+    return row.family === "EVM" ? this.minTvlUsd : this.minTvlUsdNonEvm;
   }
 
   private filterPools(
@@ -455,16 +529,18 @@ export class DeFiLlamaClient {
     const seen = new Set<string>();
     const eligible = pools.filter((p) => {
       if (!p.pool || seen.has(p.pool)) return false;
-      const chain = p.chain?.toLowerCase?.() ?? "";
-      if (!RELEVANT_CHAINS.has(chain)) return false;
+      // DeFiLlama only lists mainnets; a testnet row must never claim a pool.
+      const row = findChainByName(p.chain);
+      if (!row || row.isTestnet) return false;
       // Per-chain floor — a single Ethereum-scale threshold erases Sui/Solana.
-      if (typeof p.tvlUsd !== "number" || p.tvlUsd < this.minTvlForChain(chain))
+      if (typeof p.tvlUsd !== "number" || p.tvlUsd < this.minTvlForChain(row))
         return false;
       if (typeof p.apy !== "number" || p.apy <= 0) return false;
       const symbolUpper = (p.symbol ?? "").toUpperCase();
-      const isRelevantSymbol = RELEVANT_SYMBOL_TOKENS.some((token) =>
-        symbolUpper.includes(token),
-      );
+      const isRelevantSymbol = [
+        ...RELEVANT_SYMBOL_TOKENS,
+        ...chainAssetTokens(row),
+      ].some((token) => symbolUpper.includes(token));
       if (!isRelevantSymbol) return false;
       seen.add(p.pool);
       return true;
@@ -511,29 +587,25 @@ export class DeFiLlamaClient {
       }
     }
 
-    return selected.map((p) => ({
-      pool: p.pool,
-      chain: p.chain,
-      project: p.project,
-      symbol: p.symbol,
-      tvlUsd: p.tvlUsd,
-      apy: p.apy as number,
-      apy7d:
-        (typeof p.apyPct7D === "number"
-          ? (p.apy as number) + p.apyPct7D
-          : undefined) ??
-        p.apyMean30d ??
-        undefined,
-      apyBase: p.apyBase ?? undefined,
-      apyReward: p.apyReward ?? undefined,
-      ilRisk: p.ilRisk ?? "no",
-      exposure: p.exposure ?? "single",
-      // Pool-level deposits (spec §3): carry the resolver's matching keys.
-      poolMeta: p.poolMeta ?? null,
-      underlyingTokens: Array.isArray(p.underlyingTokens)
-        ? p.underlyingTokens
-        : undefined,
-    }));
+    return selected.map(toYieldPool);
+  }
+
+  /**
+   * The pool as DeFiLlama listed it in the most recent full feed this process
+   * fetched, or `undefined` when that feed is older than the poll cadence (so
+   * the answer would not be "current") or the pool is not in it.
+   *
+   * `null` means the feed IS current and the pool is gone from it: DeFiLlama
+   * no longer lists it, so it must not be re-scored back to life from a stored
+   * copy.
+   */
+  feedPool(poolId: string): DeFiLlamaYieldPool | null | undefined {
+    if (
+      !this.fullFeed ||
+      Date.now() - this.fullFeed.at > this.poolsCacheTtlSec * 2000
+    )
+      return undefined;
+    return this.fullFeed.byId.get(poolId) ?? null;
   }
 
   private async fetchJson<T>(url: string): Promise<T> {

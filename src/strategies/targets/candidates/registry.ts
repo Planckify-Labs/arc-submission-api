@@ -48,6 +48,19 @@ export interface CandidateSource {
     pool: DeFiLlamaYieldPool,
     ctx: ResolverContext,
   ): Promise<Address | null>;
+  /**
+   * Also asked to CHECK an answer another source gave (see
+   * `independentSourcesAgree`). Only for a source whose address means the same
+   * contract the asking resolver means — a vault-keyed source cannot judge a
+   * Curve pool whose catalog key is the LP token.
+   */
+  readonly corroborates?: boolean;
+}
+
+/** A candidate and the source that produced it. */
+export interface CandidateAnswer {
+  address: Address;
+  sourceId: string;
 }
 
 const byProject = new Map<string, CandidateSource[]>();
@@ -97,11 +110,19 @@ export async function candidateAddressForPool(
   pool: DeFiLlamaYieldPool,
   ctx: ResolverContext,
 ): Promise<Address | null> {
+  return (await candidateForPool(pool, ctx))?.address ?? null;
+}
+
+/** `candidateAddressForPool`, also saying which source answered. */
+export async function candidateForPool(
+  pool: DeFiLlamaYieldPool,
+  ctx: ResolverContext,
+): Promise<CandidateAnswer | null> {
   for (const source of sourcesForProject(pool.project)) {
     try {
       const address = await source.candidate(pool, ctx);
       recordSourceOutcome(source.id, address ? "hit" : "miss");
-      if (address) return address;
+      if (address) return { address, sourceId: source.id };
     } catch {
       // Treated as "this source has no answer". Deliberately silent per-pool:
       // the sources log their own systemic failures once (see poolsOld).
@@ -109,6 +130,35 @@ export async function candidateAddressForPool(
     }
   }
   return null;
+}
+
+/**
+ * Two independent sources must not name different contracts for one pool.
+ *
+ * The first source to answer wins the lookup, so a wrong answer from it used
+ * to be checked only by the validator — and a sibling vault of the same asset
+ * passes the validator. Every source marked `corroborates`, other than the one
+ * that answered, is asked too; a source with no answer abstains, a DIFFERENT
+ * answer is a refusal (the pool stays Manual) and is logged, because one of
+ * two sources we trust is wrong about where the money goes.
+ */
+export async function independentSourcesAgree(
+  pool: DeFiLlamaYieldPool,
+  ctx: ResolverContext,
+  answer: CandidateAnswer,
+): Promise<boolean> {
+  for (const source of sourcesForProject(pool.project)) {
+    if (!source.corroborates || source.id === answer.sourceId) continue;
+    const other = await source.candidate(pool, ctx).catch(() => null);
+    if (other && other.toLowerCase() !== answer.address.toLowerCase()) {
+      console.warn(
+        `[candidates] ${pool.project} pool ${pool.pool}: ${answer.sourceId} says ${answer.address}, ` +
+          `${source.id} says ${other}. Refusing the pool until they agree.`,
+      );
+      return false;
+    }
+  }
+  return true;
 }
 
 // ── Discovery health (§11.5b) ───────────────────────────────────────────────

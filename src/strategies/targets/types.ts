@@ -478,13 +478,24 @@ export interface PoolTargetResolver {
  * Injected capabilities a resolver needs — kept as an interface so resolvers
  * stay plain, testable functions (no Nest DI inside the family files).
  */
+export interface FetchJsonInit<T> {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  cacheIf?: (body: T) => boolean;
+}
+
 export interface ResolverContext {
-  /** TTL-cached, deduped JSON GET (Valkey-backed). Returns `null` on failure. */
+  /**
+   * TTL-cached, deduped JSON GET (Valkey-backed). Returns `null` on failure.
+   * `cacheIf` keeps a 2xx body that is not an answer yet (a "pending") out of
+   * the cache, so it is asked again next time instead of for the whole TTL.
+   */
   fetchJsonCached<T>(
     cacheKey: string,
     url: string,
     ttlSec: number,
-    init?: { method?: string; headers?: Record<string, string>; body?: string },
+    init?: FetchJsonInit<T>,
   ): Promise<T | null>;
   /** On-chain validation (spec §3.2). Returns false when it can't confirm. */
   validate(target: DepositTarget, pool: DeFiLlamaYieldPool): Promise<boolean>;

@@ -41,12 +41,53 @@ import {
   underlyingOf,
 } from "./types";
 
-// TVL sanity band (spec §11 Q3): on-chain TVL for a recognised stablecoin
-// vault must land within [tvl / FACTOR, tvl * FACTOR] of DeFiLlama's figure.
-// A very loose factor catches gross mismatches (wrong vault, dust) without
-// false-rejecting on price/timing drift. For non-stables (no reliable
-// server-side price) we skip the USD band and rely on asset() + selectors.
-const TVL_TOLERANCE_FACTOR = 10;
+// TVL band (spec §11 Q3): a vault's on-chain TVL must land within
+// [tvl / FACTOR, tvl * FACTOR] of DeFiLlama's figure for the pool the user
+// picked. It is what binds a candidate to THAT pool: `asset()` proves the
+// vault takes the right token, not that it is the vault on the card, and a
+// sibling vault of the same asset passes every other check.
+//
+// Measured 2026-10-26 against the live feed, fresh DeFiLlama TVL and on-chain
+// totalAssets agree within 4% (Fluid, Spark, Sky, Yo, Gearbox, Centrifuge on
+// Ethereum/Base/Arbitrum/Monad). The only misses were rows whose cached TVL was
+// two weeks old. 2x leaves room for price and timing drift; the old 10x let a
+// vault five times the size of the pool through.
+const DEFAULT_TVL_TOLERANCE_FACTOR = 2;
+
+function tvlToleranceFactor(): number {
+  const n = Number(process.env.DEFI_TVL_BAND_FACTOR);
+  return Number.isFinite(n) && n > 1 ? n : DEFAULT_TVL_TOLERANCE_FACTOR;
+}
+
+// Exit cost (spec §11 Layer 2). ERC-4626 requires `previewDeposit` and
+// `previewRedeem` to include the vault's fees, so a deposit-then-redeem preview
+// is the round trip a user pays, read off the chain with no funds. Found the
+// day this was written: an in-app "TAU cbETH Dynamic Looping" vault charging
+// 0.2% in and 5% out (519 bps round trip). Every other in-app 4626 vault
+// measured under 4 bps.
+const DEFAULT_MAX_ROUNDTRIP_LOSS_BPS = 50;
+
+function maxRoundTripLossBps(): number {
+  const n = Number(process.env.DEFI_4626_MAX_ROUNDTRIP_LOSS_BPS);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_MAX_ROUNDTRIP_LOSS_BPS;
+}
+
+/**
+ * USD price of an asset, for the TVL band on non-stable vaults. Set by
+ * `TargetResolverService` (it owns the budgeted price client); unset, or a
+ * null answer, means "no price" and the band is skipped for that vault, as it
+ * always was for non-stables.
+ */
+export type AssetPriceLookup = (
+  chainId: number,
+  asset: Address,
+) => Promise<number | null>;
+
+let assetPriceLookup: AssetPriceLookup | null = null;
+
+export function setAssetPriceLookup(lookup: AssetPriceLookup | null): void {
+  assetPriceLookup = lookup;
+}
 
 const STABLE_SYMBOLS = new Set([
   "USDC",
@@ -66,6 +107,8 @@ const ERC4626_ABI = parseAbi([
   "function totalAssets() view returns (uint256)",
   "function convertToShares(uint256 assets) view returns (uint256)",
   "function maxDeposit(address receiver) view returns (uint256)",
+  "function previewDeposit(uint256 assets) view returns (uint256)",
+  "function previewRedeem(uint256 shares) view returns (uint256)",
 ]);
 
 /**
@@ -258,14 +301,57 @@ async function validateErc4626(
       .catch(() => null);
     if (maxDeposit !== null && maxDeposit === 0n) return false;
 
-    // TVL band — stablecoins only (assume ~$1); skip otherwise.
-    if (isStable(pool.symbol) && pool.tvlUsd > 0) {
-      const onchainUsd = Number(totalAssets) / Number(oneUnit);
-      const lo = pool.tvlUsd / TVL_TOLERANCE_FACTOR;
-      const hi = pool.tvlUsd * TVL_TOLERANCE_FACTOR;
-      if (onchainUsd < lo || onchainUsd > hi) return false;
+    if (!(await exitCostAcceptable(client, target.vault, oneUnit)))
+      return false;
+
+    // TVL band. Stablecoins price at ~$1; anything else needs a price, and
+    // without one the band is skipped (it always was for non-stables).
+    if (pool.tvlUsd > 0) {
+      const price = isStable(pool.symbol)
+        ? 1
+        : await assetPriceLookup?.(chainId, asset as Address).catch(() => null);
+      if (typeof price === "number" && price > 0) {
+        const onchainUsd = (Number(totalAssets) / Number(oneUnit)) * price;
+        const factor = tvlToleranceFactor();
+        if (
+          onchainUsd < pool.tvlUsd / factor ||
+          onchainUsd > pool.tvlUsd * factor
+        )
+          return false;
+      }
     }
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a deposit-then-redeem of `amount` returns, per the vault's own previews.
+ * A preview that reverts is a refusal: the exit cost is then unknowable, and
+ * "we could not tell what leaving costs" is not a vault to put money into.
+ */
+async function exitCostAcceptable(
+  client: Client,
+  vault: Address,
+  amount: bigint,
+): Promise<boolean> {
+  try {
+    const shares = await client.readContract({
+      address: vault,
+      abi: ERC4626_ABI,
+      functionName: "previewDeposit",
+      args: [amount],
+    });
+    const back = await client.readContract({
+      address: vault,
+      abi: ERC4626_ABI,
+      functionName: "previewRedeem",
+      args: [shares],
+    });
+    if (back >= amount) return true;
+    const lossBps = Number(((amount - back) * 10_000n) / amount);
+    return lossBps <= maxRoundTripLossBps();
   } catch {
     return false;
   }
@@ -709,25 +795,40 @@ async function validateAsyncVault(
  */
 const RESOLVER_VALIDATED_KINDS: Readonly<Record<string, string>> = {
   // ── Sui ───────────────────────────────────────────────────────────────
-  "scallop-market": "scallop.resolver.ts — coinType matched against the venue's own market list",
+  "scallop-market":
+    "scallop.resolver.ts — coinType matched against the venue's own market list",
   "navi-pool": "navi.resolver.ts — coinType matched against NAVI's pools API",
-  "ember-vault": "ember.resolver.ts — poolMeta ↔ vault name, refuses ambiguity",
+  "ember-vault":
+    "ember.resolver.ts — poolMeta ↔ vault name, refuses ambiguity",
   "kai-vault": "kai.resolver.ts — vault matched on its own API by coinType",
-  "suilend-market": "suilend.resolver.ts — pinned lending market + reserve index",
+  "suilend-market":
+    "suilend.resolver.ts — pinned lending market + reserve index",
   "current-market": "current.resolver.ts — market matched on the app's own API",
-  "sui-lst": "suilst.resolver.ts — pinned venue table (sui-lst.config.ts), inAppDeposit gated",
-  "cetus-clmm-pool": "cetus.resolver.ts — pool recovered from Cetus's API by mint pair + tick spacing",
-  "turbos-clmm-pool": "turbos.resolver.ts — pool recovered from Turbos's /pools stats API",
-  "bluefin-spot-pool": "bluefin.resolver.ts — pool recovered from Bluefin's /pools/info API",
+  "sui-lst":
+    "suilst.resolver.ts — pinned venue table (sui-lst.config.ts), inAppDeposit gated",
+  "cetus-clmm-pool":
+    "cetus.resolver.ts — pool recovered from Cetus's API by mint pair + tick spacing",
+  "turbos-clmm-pool":
+    "turbos.resolver.ts — pool recovered from Turbos's /pools stats API",
+  "bluefin-spot-pool":
+    "bluefin.resolver.ts — pool recovered from Bluefin's /pools/info API",
   // ── Solana ────────────────────────────────────────────────────────────
-  "solana-reserve": "kamino-lend.resolver.ts — reserve joined on market name + mint, 10x TVL disambiguation",
-  "solana-lst-stake": "solana-lst.resolver.ts — pinned venue table (solana-lst.config.ts)",
-  "jupiter-lend-vault": "jupiter-lend.resolver.ts — Earn-only poolMeta gate, asset from the row",
-  "kamino-kvault": "kamino-kvault.resolver.ts — pinned venue table, poolMeta matched",
-  "kamino-liquidity-strategy": "kamino-liquidity.resolver.ts — strategy joined on mint pair, TVL disambiguation",
-  "raydium-cpmm-pool": "raydium-cpmm.resolver.ts — programId-filtered, 10x TVL disambiguation",
-  "raydium-amm-v4-pool": "raydium-amm-v4.resolver.ts — programId-filtered, same discipline",
-  "raydium-stable-pool": "raydium-stable.resolver.ts — programId-filtered, same discipline",
+  "solana-reserve":
+    "kamino-lend.resolver.ts — reserve joined on market name + mint, 10x TVL disambiguation",
+  "solana-lst-stake":
+    "solana-lst.resolver.ts — pinned venue table (solana-lst.config.ts)",
+  "jupiter-lend-vault":
+    "jupiter-lend.resolver.ts — Earn-only poolMeta gate, asset from the row",
+  "kamino-kvault":
+    "kamino-kvault.resolver.ts — pinned venue table, poolMeta matched",
+  "kamino-liquidity-strategy":
+    "kamino-liquidity.resolver.ts — strategy joined on mint pair, TVL disambiguation",
+  "raydium-cpmm-pool":
+    "raydium-cpmm.resolver.ts — programId-filtered, 10x TVL disambiguation",
+  "raydium-amm-v4-pool":
+    "raydium-amm-v4.resolver.ts — programId-filtered, same discipline",
+  "raydium-stable-pool":
+    "raydium-stable.resolver.ts — programId-filtered, same discipline",
   "jito-vault-deposit": "jito-vault.resolver.ts — pinned vault table",
 };
 
@@ -791,8 +892,7 @@ export async function validateTarget(
       // Manual, which is the same fail-closed direction every other layer
       // takes.
       return (
-        !isEvmTargetKind(target.kind) &&
-        isResolverValidatedKind(target.kind)
+        !isEvmTargetKind(target.kind) && isResolverValidatedKind(target.kind)
       );
   }
 }

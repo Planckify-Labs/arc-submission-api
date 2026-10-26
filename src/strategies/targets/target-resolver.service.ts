@@ -26,8 +26,17 @@ import {
 } from "./chain-directory";
 import { resolveTarget } from "./registry";
 import { getPublicClientForChain, resetRpcClients } from "./rpc";
-import type { DepositTarget, EvmReadClient, ResolverContext } from "./types";
-import { validateTarget } from "./validation";
+import type {
+  DepositTarget,
+  EvmReadClient,
+  FetchJsonInit,
+  ResolverContext,
+} from "./types";
+import { setAssetPriceLookup, validateTarget } from "./validation";
+import {
+  AlchemyPricesClient,
+  alchemyNetworkForChainId,
+} from "../external/alchemy-prices.client";
 
 const FETCH_TIMEOUT_MS = 20_000;
 /**
@@ -48,8 +57,20 @@ export class TargetResolverService implements OnModuleInit {
   constructor(
     private readonly valkey: ValkeyService,
     private readonly prisma: PrismaService,
+    private readonly alchemyPrices: AlchemyPricesClient,
   ) {
     bootTargetResolvers();
+    // The TVL band for non-stable vaults needs a USD price; this client is the
+    // one budgeted, cached place the backend prices tokens. A chain Alchemy
+    // does not serve answers null, and the band is skipped there.
+    setAssetPriceLookup(async (chainId, asset) => {
+      const network = alchemyNetworkForChainId(chainId);
+      if (!network) return null;
+      const prices = await this.alchemyPrices.getPricesByAddress([
+        { network, address: asset },
+      ]);
+      return prices.get(`${network}:${asset.toLowerCase()}`) ?? null;
+    });
     this.ctx = {
       fetchJsonCached: (cacheKey, url, ttlSec, init) =>
         this.fetchJsonCached(cacheKey, url, ttlSec, init),
@@ -93,6 +114,7 @@ export class TargetResolverService implements OnModuleInit {
             rpcUrl: true,
             type: true,
             isTestnet: true,
+            tokens: { where: { isActive: true }, select: { symbol: true } },
           },
           // Mainnet first so a similarly-named testnet row can never shadow it
           // in the by-name index (chain-directory keeps the first writer).
@@ -107,6 +129,7 @@ export class TargetResolverService implements OnModuleInit {
               rpcUrl: r.rpcUrl,
               family: r.type,
               isTestnet: r.isTestnet,
+              assetSymbols: r.tokens.map((t) => t.symbol),
             }),
           ),
         );
@@ -154,7 +177,7 @@ export class TargetResolverService implements OnModuleInit {
     cacheKey: string,
     url: string,
     ttlSec: number,
-    init?: { method?: string; headers?: Record<string, string>; body?: string },
+    init?: FetchJsonInit<T>,
   ): Promise<T | null> {
     const cached = await this.valkey.get<T>(cacheKey).catch(() => null);
     if (cached !== null && cached !== undefined) return cached;
@@ -177,6 +200,7 @@ export class TargetResolverService implements OnModuleInit {
           return null;
         }
         const json = (await res.json()) as T;
+        if (init?.cacheIf && !init.cacheIf(json)) return json;
         await this.valkey
           .set(cacheKey, json as object, { ttl: ttlSec })
           .catch(() => undefined);

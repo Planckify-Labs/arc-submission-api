@@ -22,6 +22,10 @@ import { AaveResolver } from "./aave.resolver";
 import { TIER3_BALANCER_RESOLVERS } from "./balancer.resolver";
 import { BluefinSpotResolver } from "./bluefin.resolver";
 import { ONCHAIN_CANDIDATE_SOURCES } from "./candidates/onchain.source";
+import {
+  MarketPoolAddressSource,
+  marketApiConfig,
+} from "./candidates/market-pool-address.source";
 import { registerCandidateSource } from "./candidates/registry";
 import { CetusResolver } from "./cetus.resolver";
 import { TIER2_COMPOUND_RESOLVERS } from "./compound.resolver";
@@ -90,6 +94,13 @@ function bootCandidateSources(): void {
   // precisely the failure mode the discovery-health check exists to catch.
   if (process.env.DEFILLAMA_PRO_API_KEY?.trim()) {
     registerCandidateSource(PoolsOldCandidateSource);
+  }
+  // Our market API: pool id -> contract from the protocol's own adapter run,
+  // joined exactly (UUIDv5) or by a unique attribute match. Ahead of the deep
+  // link, which only some protocols carry an address in. Registered only when
+  // configured, for the same reason as `/poolsOld` above.
+  if (marketApiConfig()) {
+    registerCandidateSource(MarketPoolAddressSource);
   }
   // The free replacement. Last, so a protocol's own registry always wins over
   // an aggregator's deep link.

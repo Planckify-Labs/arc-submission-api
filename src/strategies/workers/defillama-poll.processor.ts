@@ -13,6 +13,7 @@ import {
 } from "../external/defillama.client";
 import { SuiLstSource } from "../external/sui-lst.source";
 import { PrismaService } from "../../prisma/prisma.service";
+import { TargetResolverService } from "../targets/target-resolver.service";
 
 /**
  * How many cached-but-unfed pools get re-resolved per tick. Bounded because
@@ -31,6 +32,7 @@ export class DefiLlamaPollProcessor extends WorkerHost {
     private readonly defillama: DeFiLlamaClient,
     private readonly suiLstSource: SuiLstSource,
     private readonly prisma: PrismaService,
+    private readonly targetResolver: TargetResolverService,
     @InjectQueue("score-opportunities") private readonly scoringQueue: Queue,
   ) {
     super();
@@ -40,6 +42,9 @@ export class DefiLlamaPollProcessor extends WorkerHost {
     this.logger.log("Starting DeFiLlama yield pool poll...");
 
     try {
+      // Which chains to keep is the chain directory (DB-backed); load it before
+      // the feed is filtered against it.
+      await this.targetResolver.ensureChainDirectory();
       const feedPools = await this.defillama.getYieldPools();
       // Sui liquid-staking venues aren't in DeFiLlama's /pools — synthesize their
       // rows (real APY + TVL) and append so they flow through the same scoring +
@@ -120,7 +125,13 @@ export class DefiLlamaPollProcessor extends WorkerHost {
             { targetResolvedAt: { lt: cutoff } },
           ],
         },
-        orderBy: { tvlUsd: "desc" },
+        // Oldest first. This was TVL-descending, and the ~390 Manual rows
+        // (always eligible) filled every 150-row batch with the same
+        // high-TVL pools, so a smaller resolved row was never picked again:
+        // found 2026-10-26 serving Lista and Auto Finance vaults whose TVL
+        // and APY were 17 days old (scoredAt 2026-10-09). Oldest-first is a
+        // round robin; every row gets its turn.
+        orderBy: { scoredAt: "asc" },
         take: batch,
         select: { poolId: true, raw: true },
       })
@@ -135,7 +146,14 @@ export class DefiLlamaPollProcessor extends WorkerHost {
       // be re-scored without the feed. A row whose payload predates that field
       // (or is malformed) is skipped rather than guessed at — the resolver
       // needs `chain`/`project`/`symbol` to match anything at all.
-      const pool = asYieldPool(row.raw);
+      // Re-score from what DeFiLlama lists NOW, not from the copy stored when
+      // the row was first seen: a re-score of stale TVL/APY would re-stamp
+      // old numbers as fresh, and fail the TVL band against the vault's real
+      // size. A pool missing from a current feed is no longer listed at all;
+      // it is not re-scored, and ages out of the listing (getOpportunities).
+      const fromFeed = this.defillama.feedPool(row.poolId);
+      if (fromFeed === null) continue;
+      const pool = fromFeed ?? asYieldPool(row.raw);
       if (!pool) continue;
       await this.scoringQueue.add(
         "score-pool",
