@@ -28,6 +28,9 @@ let state: {
   maxRedeem: bigint;
   redeemReverts: boolean;
   logsFail: boolean;
+  maxDeposit: bigint;
+  /** undefined = the vault has no gate functions (read reverts) */
+  gates?: { receiveShares: string; sendAssets: string };
 };
 
 jest.mock("./rpc", () => ({
@@ -59,7 +62,13 @@ jest.mock("./rpc", () => ({
         case "convertToShares":
           return args?.[0] ?? 0n;
         case "maxDeposit":
-          return 2n ** 255n;
+          return state.maxDeposit;
+        case "receiveSharesGate":
+          if (!state.gates) throw new Error("revert");
+          return state.gates.receiveShares;
+        case "sendAssetsGate":
+          if (!state.gates) throw new Error("revert");
+          return state.gates.sendAssets;
         case "balanceOf":
           return state.holderBalance;
         case "maxRedeem":
@@ -135,6 +144,8 @@ beforeEach(() => {
     maxRedeem: 10n * UNIT,
     redeemReverts: false,
     logsFail: false,
+    maxDeposit: 2n ** 255n,
+    gates: undefined,
   };
   setAssetPriceLookup(async () => 3_000);
 });
@@ -202,8 +213,10 @@ describe("can current holders get out", () => {
     expect(await validateTarget(target, pool())).toBe(false);
   });
 
-  it("refuses when maxRedeem is 0 for a holder with shares", async () => {
+  it("lets the simulated redeem decide, not a maxRedeem of 0 (Morpho V2)", async () => {
     state.maxRedeem = 0n;
+    expect(await validateTarget(target, pool())).toBe(true);
+    state.redeemReverts = true;
     expect(await validateTarget(target, pool())).toBe(false);
   });
 
@@ -231,5 +244,29 @@ describe("can current holders get out", () => {
     state.holderBalance = 0n;
     state.redeemReverts = true;
     expect(await validateTarget(target, pool())).toBe(true);
+  });
+});
+
+describe("who may deposit", () => {
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const GATE = "0x5555555555555555555555555555555555555555";
+
+  it("refuses maxDeposit 0 with no gate convention (permissioned, Maple)", async () => {
+    state.maxDeposit = 0n;
+    expect(await validateTarget(target, pool())).toBe(false);
+  });
+
+  it("admits a Morpho V2 vault whose deposit gates are unset", async () => {
+    state.maxDeposit = 0n;
+    state.gates = { receiveShares: ZERO, sendAssets: ZERO };
+    expect(await validateTarget(target, pool())).toBe(true);
+  });
+
+  it("refuses a V2 vault with any deposit gate set", async () => {
+    state.maxDeposit = 0n;
+    state.gates = { receiveShares: GATE, sendAssets: ZERO };
+    expect(await validateTarget(target, pool())).toBe(false);
+    state.gates = { receiveShares: ZERO, sendAssets: GATE };
+    expect(await validateTarget(target, pool())).toBe(false);
   });
 });

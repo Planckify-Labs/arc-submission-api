@@ -111,10 +111,11 @@ const ERC4626_ABI = parseAbi([
   "function maxDeposit(address receiver) view returns (uint256)",
   "function previewDeposit(uint256 assets) view returns (uint256)",
   "function previewRedeem(uint256 shares) view returns (uint256)",
-  "function maxRedeem(address owner) view returns (uint256)",
   "function balanceOf(address owner) view returns (uint256)",
   "function redeem(uint256 shares, address receiver, address owner) returns (uint256)",
   "function cooldownDuration() view returns (uint24)",
+  "function receiveSharesGate() view returns (address)",
+  "function sendAssetsGate() view returns (address)",
 ]);
 
 /**
@@ -305,7 +306,12 @@ async function validateErc4626(
         args: [MAX_DEPOSIT_PROBE],
       })
       .catch(() => null);
-    if (maxDeposit !== null && maxDeposit === 0n) return false;
+    if (
+      maxDeposit !== null &&
+      maxDeposit === 0n &&
+      !(await depositGatesOpen(client, target.vault))
+    )
+      return false;
 
     if (!(await exitCostAcceptable(client, target.vault, oneUnit)))
       return false;
@@ -364,6 +370,36 @@ async function exitCostAcceptable(
   } catch {
     return false;
   }
+}
+
+/**
+ * Morpho Vault V2 convention: `maxDeposit` (and every other max* view) returns
+ * 0 by design, because who may deposit is decided by gate contracts instead.
+ * A deposit is open to anyone exactly when the two gates on the deposit path,
+ * `receiveSharesGate` and `sendAssetsGate`, are unset. A set gate is a
+ * contract we cannot reason about, so it stays a refusal, the same as any
+ * other `maxDeposit == 0` (Maple's permissioned syrup pools).
+ *
+ * Measured 2026-10-26 on Arc: every Morpho-listed V2 vault (Galaxy, Keyrock,
+ * Steakhouse, Gauntlet, Bitwise) has both gates unset.
+ */
+async function depositGatesOpen(
+  client: Client,
+  vault: Address,
+): Promise<boolean> {
+  const [shares, assets] = await Promise.all(
+    (["receiveSharesGate", "sendAssetsGate"] as const).map((functionName) =>
+      client
+        .readContract({ address: vault, abi: ERC4626_ABI, functionName })
+        .catch(() => null),
+    ),
+  );
+  return (
+    typeof shares === "string" &&
+    typeof assets === "string" &&
+    eqAddr(shares, ZERO) &&
+    eqAddr(assets, ZERO)
+  );
 }
 
 /**
@@ -448,16 +484,9 @@ async function holdersCanExit(
       .catch(() => 0n);
     if (balance <= 0n) continue;
 
-    const maxRedeem = await client
-      .readContract({
-        address: vault,
-        abi: ERC4626_ABI,
-        functionName: "maxRedeem",
-        args: [holder],
-      })
-      .catch(() => null);
-    if (maxRedeem === 0n) return false;
-
+    // No `maxRedeem` gate here: Morpho Vault V2 returns 0 from every max*
+    // view by design, and the simulated redeem below is the ground truth a
+    // `maxRedeem` of 0 was only ever a proxy for.
     const shares = balance < probeShares ? balance : probeShares;
     try {
       await client.call({
