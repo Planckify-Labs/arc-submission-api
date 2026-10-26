@@ -20,9 +20,11 @@
 import {
   type Address,
   encodeAbiParameters,
+  encodeFunctionData,
   erc20Abi,
   keccak256,
   parseAbi,
+  parseAbiItem,
 } from "viem";
 import type { DeFiLlamaYieldPool } from "../external/defillama.client";
 import {
@@ -109,6 +111,10 @@ const ERC4626_ABI = parseAbi([
   "function maxDeposit(address receiver) view returns (uint256)",
   "function previewDeposit(uint256 assets) view returns (uint256)",
   "function previewRedeem(uint256 shares) view returns (uint256)",
+  "function maxRedeem(address owner) view returns (uint256)",
+  "function balanceOf(address owner) view returns (uint256)",
+  "function redeem(uint256 shares, address receiver, address owner) returns (uint256)",
+  "function cooldownDuration() view returns (uint24)",
 ]);
 
 /**
@@ -303,6 +309,9 @@ async function validateErc4626(
 
     if (!(await exitCostAcceptable(client, target.vault, oneUnit)))
       return false;
+    if (await inCooldownConvention(client, target.vault)) return false;
+    if ((await holdersCanExit(client, target.vault, shares)) === false)
+      return false;
 
     // TVL band. Stablecoins price at ~$1; anything else needs a price, and
     // without one the band is skipped (it always was for non-stables).
@@ -355,6 +364,154 @@ async function exitCostAcceptable(
   } catch {
     return false;
   }
+}
+
+/**
+ * Ethena's `StakedUSDeV2` convention (sUSDe, Avant's savUSD/savETH): while
+ * `cooldownDuration()` is non-zero, `withdraw`/`redeem` revert outright and
+ * the only exit is `cooldownShares()` -> wait -> `unstake()`, which the
+ * generic 4626 adapter does not do. A vault that reads non-zero here takes the
+ * deposit and then cannot be left through the app (Avant, runbook §11.6a), so
+ * it is refused. Vaults without the function revert on the read: not this
+ * convention.
+ */
+async function inCooldownConvention(
+  client: Client,
+  vault: Address,
+): Promise<boolean> {
+  const cooldown = await client
+    .readContract({
+      address: vault,
+      abi: ERC4626_ABI,
+      functionName: "cooldownDuration",
+    })
+    .catch(() => null);
+  return typeof cooldown === "number" ? cooldown > 0 : false;
+}
+
+// How far back to look for a current holder: newest slice first, stopping once
+// enough holders are found, so a busy vault costs one slice and a quiet one at
+// most `MAX_CHUNKS`. Providers cap an `eth_getLogs` range (Alchemy's free tier
+// at 10 blocks), so the slice size is ops config.
+function holderScanMaxChunks(): number {
+  const n = Number(process.env.DEFI_4626_HOLDER_SCAN_MAX_CHUNKS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 20;
+}
+
+function holderScanChunk(): bigint {
+  const n = Number(process.env.DEFI_4626_HOLDER_SCAN_CHUNK);
+  return BigInt(Number.isFinite(n) && n > 0 ? Math.floor(n) : 1_000);
+}
+
+const MAX_HOLDERS_TRIED = 5;
+
+const TRANSFER_EVENT = parseAbiItem(
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+);
+
+/**
+ * Can the people already in this vault get out right now?
+ *
+ * Previews say what leaving costs; they cannot say leaving is allowed. Avant
+ * was the case that taught this: a conforming ERC-4626 vault that took
+ * deposits and then reverted `redeem()` under a cooldown, so a user would have
+ * been in with no way out. It was caught by a fork test, which only runs for
+ * vaults someone thought to fork.
+ *
+ * This asks the live chain instead, with no funds: find a recent recipient of
+ * the vault's shares who still holds some, then
+ *   1. `maxRedeem(holder)` must not be 0 while they hold shares, and
+ *   2. a small `redeem` simulated AS that holder (`eth_call`, nothing signed)
+ *      must not revert.
+ * `false` refuses the vault. `null` means no holder was found (or the logs
+ * could not be read): no evidence either way, and the other checks stand.
+ */
+async function holdersCanExit(
+  client: Client,
+  vault: Address,
+  probeShares: bigint,
+): Promise<boolean | null> {
+  let holders: Address[];
+  try {
+    holders = await recentShareRecipients(client, vault);
+  } catch {
+    return null;
+  }
+  for (const holder of holders) {
+    const balance = await client
+      .readContract({
+        address: vault,
+        abi: ERC4626_ABI,
+        functionName: "balanceOf",
+        args: [holder],
+      })
+      .catch(() => 0n);
+    if (balance <= 0n) continue;
+
+    const maxRedeem = await client
+      .readContract({
+        address: vault,
+        abi: ERC4626_ABI,
+        functionName: "maxRedeem",
+        args: [holder],
+      })
+      .catch(() => null);
+    if (maxRedeem === 0n) return false;
+
+    const shares = balance < probeShares ? balance : probeShares;
+    try {
+      await client.call({
+        account: holder,
+        to: vault,
+        data: encodeFunctionData({
+          abi: ERC4626_ABI,
+          functionName: "redeem",
+          args: [shares, holder, holder],
+        }),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return null;
+}
+
+/** Distinct `to` addresses of the vault's recent share transfers, newest first. */
+async function recentShareRecipients(
+  client: Client,
+  vault: Address,
+): Promise<Address[]> {
+  const head = await client.getBlockNumber();
+  const chunk = holderScanChunk();
+  const span = chunk * BigInt(holderScanMaxChunks());
+  const floor = head > span ? head - span : 0n;
+  const seen = new Set<string>();
+  const out: Address[] = [];
+  for (
+    let to = head;
+    to > floor && out.length < MAX_HOLDERS_TRIED;
+    to -= chunk
+  ) {
+    const from = to - chunk + 1n > floor ? to - chunk + 1n : floor;
+    const logs = await client.getLogs({
+      address: vault,
+      event: TRANSFER_EVENT,
+      fromBlock: from,
+      toBlock: to,
+    });
+    for (const log of [...logs].reverse()) {
+      const recipient = log.args.to;
+      if (!recipient || eqAddr(recipient, ZERO) || eqAddr(recipient, vault))
+        continue;
+      const key = recipient.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(recipient as Address);
+      if (out.length >= MAX_HOLDERS_TRIED) break;
+    }
+  }
+  return out;
 }
 
 /** Validate an Aave v3 reserve: the asset is a listed reserve with an aToken. */

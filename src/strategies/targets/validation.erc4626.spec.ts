@@ -14,16 +14,34 @@ const UNDERLYING = "0x1111111111111111111111111111111111111111";
 const VAULT = "0x2222222222222222222222222222222222222222";
 const UNIT = 10n ** 18n;
 
+const HOLDER = "0x4444444444444444444444444444444444444444";
+
 let state: {
   totalAssets: bigint;
   depositFeeBps: bigint;
   redeemFeeBps: bigint;
   previewsRevert: boolean;
+  /** undefined = the vault has no cooldownDuration() (read reverts) */
+  cooldown?: number;
+  holders: string[];
+  holderBalance: bigint;
+  maxRedeem: bigint;
+  redeemReverts: boolean;
+  logsFail: boolean;
 };
 
 jest.mock("./rpc", () => ({
   getPublicClientForChain: () => ({
     getBytecode: async () => "0xdeadbeef",
+    getBlockNumber: async () => 1_000_000n,
+    getLogs: async () => {
+      if (state.logsFail) throw new Error("range too large");
+      return state.holders.map((to) => ({ args: { to } }));
+    },
+    call: async () => {
+      if (state.redeemReverts) throw new Error("OperationNotAllowed()");
+      return { data: "0x" };
+    },
     readContract: async ({
       functionName,
       args,
@@ -42,6 +60,13 @@ jest.mock("./rpc", () => ({
           return args?.[0] ?? 0n;
         case "maxDeposit":
           return 2n ** 255n;
+        case "balanceOf":
+          return state.holderBalance;
+        case "maxRedeem":
+          return state.maxRedeem;
+        case "cooldownDuration":
+          if (state.cooldown === undefined) throw new Error("revert");
+          return state.cooldown;
         case "previewDeposit":
           if (state.previewsRevert) throw new Error("revert");
           return (
@@ -104,6 +129,12 @@ beforeEach(() => {
     depositFeeBps: 0n,
     redeemFeeBps: 0n,
     previewsRevert: false,
+    cooldown: undefined,
+    holders: [HOLDER],
+    holderBalance: 10n * UNIT,
+    maxRedeem: 10n * UNIT,
+    redeemReverts: false,
+    logsFail: false,
   };
   setAssetPriceLookup(async () => 3_000);
 });
@@ -158,5 +189,47 @@ describe("TVL band binds the vault to the pool on the card", () => {
     state.totalAssets = 3_000_000n * UNIT;
     expect(await validateTarget(target, pool({ symbol: "USDC" }))).toBe(true);
     expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+describe("can current holders get out", () => {
+  it("admits a vault whose recent holder can redeem", async () => {
+    expect(await validateTarget(target, pool())).toBe(true);
+  });
+
+  it("refuses when a holder's redeem reverts (Avant, sUSDe)", async () => {
+    state.redeemReverts = true;
+    expect(await validateTarget(target, pool())).toBe(false);
+  });
+
+  it("refuses when maxRedeem is 0 for a holder with shares", async () => {
+    state.maxRedeem = 0n;
+    expect(await validateTarget(target, pool())).toBe(false);
+  });
+
+  it("refuses the cooldown convention even with no holder in sight", async () => {
+    state.holders = [];
+    state.cooldown = 86_400;
+    expect(await validateTarget(target, pool())).toBe(false);
+  });
+
+  it("admits a cooldown convention vault whose cooldown is off", async () => {
+    state.cooldown = 0;
+    expect(await validateTarget(target, pool())).toBe(true);
+  });
+
+  it("treats no holder, or unreadable logs, as no evidence", async () => {
+    state.holders = [];
+    expect(await validateTarget(target, pool())).toBe(true);
+    state.holders = [HOLDER];
+    state.logsFail = true;
+    state.redeemReverts = true;
+    expect(await validateTarget(target, pool())).toBe(true);
+  });
+
+  it("skips holders that no longer hold shares", async () => {
+    state.holderBalance = 0n;
+    state.redeemReverts = true;
+    expect(await validateTarget(target, pool())).toBe(true);
   });
 });
