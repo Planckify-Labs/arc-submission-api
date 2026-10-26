@@ -117,6 +117,20 @@ function isLifiFlagged(token: object): boolean {
   return typeof raw === "string" && raw.toLowerCase() === "flagged";
 }
 
+/**
+ * LI.FI answers `/status` with a 404 until it has indexed a just-sent tx.
+ * The SDK throws that as an `SDKError` whose `cause` is the `HTTPError`,
+ * so the status code is looked up along the cause chain.
+ */
+export function isLifiNotFound(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    if ((current as { status?: unknown }).status === 404) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /** How long a chain's LI.FI token list is served from memory. */
 const TOKEN_LIST_TTL_MS = 60 * 60 * 1000;
 /** Tokens kept per chain for the picker; search covers the long tail. */
@@ -444,9 +458,14 @@ export class LifiBridgeAdapter implements BridgeRouteAdapter {
         txHash: ref.sourceTxHash,
       });
     } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`[status] LI.FI error: ${detail}`);
-      throw new DefiError("network_error", detail);
+      if (isLifiNotFound(error)) {
+        // Not indexed yet: the same pending state LI.FI's own NOT_FOUND gets.
+        res = { status: "NOT_FOUND" } as StatusResponse;
+      } else {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`[status] LI.FI error: ${detail}`);
+        throw new DefiError("network_error", detail);
+      }
     }
 
     return toBridgeStatus(res, {
