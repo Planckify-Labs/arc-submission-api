@@ -12,6 +12,7 @@ import {
 import { LifiClient, LifiQuote } from "./external/lifi.client";
 import {
   CHAIN_ID_BY_ZERION_ID,
+  chainFromChainId,
   ZerionClient,
   type ZerionPosition,
 } from "../external/zerion";
@@ -25,6 +26,11 @@ import { getPublicClientForChain } from "./targets/rpc";
 const COMET_DISCOVERY_ABI = parseAbi([
   "function balanceOf(address account) view returns (uint256)",
   "function baseToken() view returns (address)",
+]);
+
+const VAULT_DISCOVERY_ABI = parseAbi([
+  "function balanceOf(address account) view returns (uint256)",
+  "function convertToAssets(uint256 shares) view returns (uint256)",
 ]);
 
 /**
@@ -542,7 +548,135 @@ export class StrategiesService {
     );
     if (zerionBackfilled.length > 0) all = [...zerionBackfilled, ...all];
 
+    const vaultBackfilled = await this.discoverVaultPositions(
+      userId,
+      walletAddress,
+      all,
+    );
+    if (vaultBackfilled.length > 0) all = [...vaultBackfilled, ...all];
+
     return all;
+  }
+
+  /**
+   * On-chain discovery for ERC-4626 vaults on chains Zerion does not index
+   * (Arc today). Zerion is the discovery source elsewhere; on such a chain a
+   * position the user opened outside Takumi (straight on Morpho's site, or
+   * Aave's TokenizationSpoke) was simply invisible.
+   *
+   * Contract calls only, no third-party API: for every in-app ERC-4626
+   * target listed on the chain, read the wallet's shares (`balanceOf`) and
+   * their value (`convertToAssets`). The vault list is the opportunity cache
+   * itself, so a newly listed vault is covered with no code change, and the
+   * chain set is whatever has in-app vaults minus what Zerion covers.
+   */
+  private async discoverVaultPositions(
+    userId: string,
+    walletAddress: string,
+    existing: { poolId: string | null; status: string }[],
+  ) {
+    const known = new Set(
+      existing
+        .filter((p) => p.status === "active" && p.poolId)
+        .map((p) => p.poolId as string),
+    );
+    const created: NonNullable<
+      Awaited<ReturnType<StrategiesService["createPosition"]>>
+    >[] = [];
+
+    const rows = await this.prisma.opportunityCache
+      .findMany({
+        where: { depositTarget: { path: ["kind"], equals: "erc4626" } },
+        select: {
+          poolId: true,
+          protocolSlug: true,
+          chainId: true,
+          chainName: true,
+          assetSymbol: true,
+          tier: true,
+          depositTarget: true,
+        },
+      })
+      .catch(() => []);
+
+    const byChain = new Map<number, typeof rows>();
+    for (const row of rows) {
+      if (chainFromChainId(row.chainId)) continue; // Zerion covers it
+      if (known.has(row.poolId)) continue;
+      byChain.set(row.chainId, [...(byChain.get(row.chainId) ?? []), row]);
+    }
+
+    for (const [chainId, chainRows] of byChain) {
+      const client = getPublicClientForChain(chainId);
+      if (!client) continue;
+      // One round of share reads per chain, in parallel; only vaults the
+      // wallet actually holds go on to the value read.
+      const targets = chainRows.flatMap((row) => {
+        const t = row.depositTarget as {
+          vault?: `0x${string}`;
+          asset?: `0x${string}`;
+        } | null;
+        return t?.vault && t.asset
+          ? [{ row, vault: t.vault, asset: t.asset }]
+          : [];
+      });
+      const held = await Promise.allSettled(
+        targets.map((t) =>
+          client.readContract({
+            address: t.vault,
+            abi: VAULT_DISCOVERY_ABI,
+            functionName: "balanceOf",
+            args: [walletAddress as `0x${string}`],
+          }),
+        ),
+      );
+      for (let i = 0; i < targets.length; i++) {
+        const r = held[i];
+        if (r.status !== "fulfilled" || r.value <= 0n) continue;
+        const { row, vault, asset } = targets[i];
+        const shares = r.value;
+        const target = { vault, asset };
+        try {
+          const assets = await client.readContract({
+            address: target.vault,
+            abi: VAULT_DISCOVERY_ABI,
+            functionName: "convertToAssets",
+            args: [shares],
+          });
+          if (assets <= 0n) continue;
+          const decimals = await client
+            .readContract({
+              address: target.asset,
+              abi: erc20Abi,
+              functionName: "decimals",
+            })
+            .catch(() => 18);
+          known.add(row.poolId);
+          const position = await this.createDiscoveredPosition(
+            userId,
+            walletAddress,
+            {
+              protocolSlug: row.protocolSlug,
+              chainId,
+              namespace: "eip155",
+              assetSymbol: row.assetSymbol,
+              assetContract: target.asset,
+              poolId: row.poolId,
+              amountRaw: assets.toString(),
+              decimals,
+              tier: row.tier,
+              chainName: row.chainName ?? findChainById(chainId)?.name ?? "",
+            },
+          );
+          if (position) created.push(position);
+        } catch (err) {
+          this.logger.warn(
+            `[discoverVaultPositions] scan failed for vault=${target.vault} chain=${chainId}: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+    return created;
   }
 
   /** Typed only so `reconcilePositions` can reference `getPositions`'s row shape. */

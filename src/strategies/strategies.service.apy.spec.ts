@@ -68,7 +68,12 @@ describe("StrategiesService.getPositions — currentApy join", () => {
 
     expect(position.currentApy).toBe(4.2);
     // Only the poolId-keyed lookup should run — no legacy fallback query.
-    expect(prisma.opportunityCache.findMany).toHaveBeenCalledTimes(1);
+    // (The vault-discovery scan reads the cache too; it is not an APY join.)
+    const apyJoins = prisma.opportunityCache.findMany.mock.calls.filter(
+      ([arg]: [{ where?: Record<string, unknown> }]) =>
+        !arg?.where || !("depositTarget" in arg.where),
+    );
+    expect(apyJoins).toHaveLength(1);
     expect(prisma.opportunityCache.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { poolId: { in: ["pool-abc"] } } }),
     );

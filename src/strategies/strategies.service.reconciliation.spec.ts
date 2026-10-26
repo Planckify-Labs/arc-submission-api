@@ -24,9 +24,13 @@ jest.mock("./targets/chain-directory", () => ({
 }));
 
 const mockReadContract = jest.fn();
+// Arc: a chain with in-app vaults that Zerion does not index.
+const ARC_CHAIN_ID = 5042;
 jest.mock("./targets/rpc", () => ({
   getPublicClientForChain: (chainId: number) =>
-    chainId === 8453 ? { readContract: mockReadContract } : null,
+    chainId === 8453 || chainId === ARC_CHAIN_ID
+      ? { readContract: mockReadContract }
+      : null,
 }));
 
 import { StrategiesService } from "./strategies.service";
@@ -232,5 +236,80 @@ describe("discoverZerionPositions (best-effort secondary source)", () => {
     await expect(
       serviceWithFailingZerion.getPositions("user-1", WALLET),
     ).resolves.toEqual([]);
+  });
+});
+
+
+describe("discoverVaultPositions (on-chain ERC-4626 scan where Zerion is blind)", () => {
+  const VAULT = "0xbeef0016cb2fd5c352ea7ca08a9f54739dfa7298";
+  const ARC_USDC = "0x3600000000000000000000000000000000000000";
+  const arcRow = {
+    poolId: "arc-steakhouse",
+    protocolSlug: "morpho-v1",
+    chainId: ARC_CHAIN_ID,
+    chainName: "Arc",
+    assetSymbol: "USDC",
+    tier: "balanced",
+    depositTarget: { kind: "erc4626", vault: VAULT, asset: ARC_USDC },
+  };
+  // Ethereum is Zerion-indexed, so it must never be scanned here.
+  const ethRow = { ...arcRow, poolId: "eth-x", chainId: 1, chainName: "Ethereum" };
+
+  function arcChain(shares: bigint) {
+    mockReadContract.mockImplementation(
+      async ({ address, functionName }: { address: string; functionName: string }) => {
+        if (address.toLowerCase() === COMET) return 0n;
+        if (address.toLowerCase() === VAULT && functionName === "balanceOf") return shares;
+        if (address.toLowerCase() === VAULT && functionName === "convertToAssets") return 86_780_893n;
+        if (address.toLowerCase() === ARC_USDC && functionName === "decimals") return 6;
+        throw new Error(`unexpected call ${functionName} on ${address}`);
+      },
+    );
+  }
+
+  it("backfills a vault position the user opened outside Takumi, valued on-chain", async () => {
+    arcChain(86_649_917_590_645_973_982n);
+    const prisma = fakePrisma();
+    prisma.opportunityCache.findMany.mockResolvedValue([arcRow, ethRow]);
+    const service = makeService(prisma);
+
+    await service.getPositions("user-1", WALLET);
+
+    expect(prisma.strategyPosition.create).toHaveBeenCalledTimes(1);
+    const created = prisma.strategyPosition.create.mock.calls[0][0].data;
+    expect(created.protocolSlug).toBe("morpho-v1");
+    expect(created.chainId).toBe(ARC_CHAIN_ID);
+    expect(created.poolId).toBe("arc-steakhouse");
+    expect(created.assetContract).toBe(ARC_USDC);
+    expect(created.amountAtDeposit).toBe("86780893");
+    // Only the Arc vault was read; the Zerion-covered chain was not.
+    const vaultReads = mockReadContract.mock.calls.filter(
+      ([c]) => (c as { address: string }).address.toLowerCase() === VAULT,
+    );
+    expect(vaultReads.length).toBe(2);
+  });
+
+  it("skips a vault the wallet does not hold, or one already tracked", async () => {
+    arcChain(0n);
+    const prisma = fakePrisma();
+    prisma.opportunityCache.findMany.mockResolvedValue([arcRow]);
+    await makeService(prisma).getPositions("user-1", WALLET);
+    expect(prisma.strategyPosition.create).not.toHaveBeenCalled();
+
+    arcChain(5n);
+    const tracked = fakePrisma();
+    tracked.opportunityCache.findMany.mockResolvedValue([arcRow]);
+    tracked.strategyPosition.findMany.mockResolvedValue([
+      {
+        id: "p1",
+        protocolSlug: "morpho-v1",
+        chainId: ARC_CHAIN_ID,
+        poolId: "arc-steakhouse",
+        assetContract: ARC_USDC,
+        status: "active",
+      },
+    ]);
+    await makeService(tracked).getPositions("user-1", WALLET);
+    expect(tracked.strategyPosition.create).not.toHaveBeenCalled();
   });
 });
