@@ -49,7 +49,7 @@ A per-contract scanner, run as a BullMQ repeatable job.
 1. **Scan.** `eth_getLogs` for `PointDepositCreated` on each active TakumiPay `SmartContract`, from a saved cursor (initially the contract's deploy block) up to `head − minConfirmations`. Use `Blockchain.minConfirmations`, through the same `resolveMinConfirmations` the worker uses. Page the range: providers cap `eth_getLogs` (often around 10k blocks), and Arc produces blocks quickly.
 2. **Persist the cursor** per contract, only after the page is processed.
 3. **Check completeness.** Compare the highest `depositId` seen against `pointDepositCounter()`, and alert on gaps.
-4. **Match** each event to `PointTransaction` rows by (blockchainId, contract, refId). Use `samePointDeposit` from `src/points/point-deposit-identity.ts`, the same identity intake and the worker use.
+4. **Match** each event to `PointTransaction` rows by (blockchainId, contract, refId). Use `samePointDeposit` from `src/points/point-deposit-identity.ts`, the same identity intake and the worker use. Read only `PointDepositCreated`; never credit a deposit from another flow's event. A refId can legitimately appear in more than one flow on-chain: a booking or deposit can claim a pending merchant quote's ULID first, and the merchant payment still succeeds (contract `_isRefIdUsed` NatSpec; Olympix finding 5.1.1). That is harmless only while each flow is credited from its own records.
 5. **Classify.**
    - **Credited:** a `COMPLETED` row exists. Done.
    - **In flight:** a `PENDING`/`CONFIRMED` row exists, possibly `needsReview`. Leave it to the worker or ops.

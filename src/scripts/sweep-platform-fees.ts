@@ -15,8 +15,13 @@
  * on the contract — it cannot withdraw more than the cumulative platform
  * fees accrued from merchant payments. See spec ss4.7 and invariant I-13.
  *
+ * Like every exit it is also bounded by the per-token sweep cap, which no
+ * 24h span can exceed (contract 2.3.0); sweepAllowance(token) returns what
+ * can leave right now.
+ *
  * Pre-flight checks:
- *   1. Verify amount <= platformFeeAccrued[token] via readContract
+ *   1. Verify amount <= platformFeeAccrued[token] and
+ *      amount <= sweepAllowance(token) via readContract
  *   2. Verify the caller key matches the contract owner
  *   3. Display a confirmation prompt before executing
  *
@@ -55,7 +60,7 @@ export async function main() {
   //
   // import { createWalletClient, http } from "viem";
   // import { privateKeyToAccount } from "viem/accounts";
-  // import { TakumiPayAbi } from "../blockchain-verification/abis/takumi-wallet-merchant.abi";
+  // import { TakumiPayAbi } from "../blockchain-verification/abis/takumi-pay.abi";
   //
   // const account = privateKeyToAccount(process.env.ADMIN_WALLET_PRIVATE_KEY as `0x${string}`);
   // const client = createWalletClient({ account, chain, transport: http(rpcUrl) });

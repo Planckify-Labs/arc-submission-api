@@ -32,8 +32,12 @@ export class TreasuryReconciliationService {
    * that have been settled or paid out via the onchain rail.
    *
    * "Outstanding" means tokens are still in the contract (not yet swept).
-   * To compute true outstanding, subtract swept amounts from
-   * PlatformFeesSwept and MerchantBacking sweep events on-chain.
+   * To compute true outstanding, subtract what left on-chain:
+   * MerchantBackingSwept, Withdraw and TokenRecovered amounts, plus
+   * PlatformFeesSwept from sweepPlatformFees. Since contract 2.3.0 a
+   * withdrawal that takes fee-backed balance also emits PlatformFeesSwept in
+   * the same transaction, relabelling part of that Withdraw/TokenRecovered
+   * amount as fees. Those are not an extra outflow, so do not subtract them twice.
    */
   async getOutstandingCustody(): Promise<CustodyBalance[]> {
     const results = await this.prisma.$queryRaw<

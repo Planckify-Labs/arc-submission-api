@@ -291,17 +291,19 @@ describe("Security Invariants (ss12.2)", () => {
 
   describe("I-10: Treasury custody is recoverable", () => {
     it("contract exposes sweep functions (structural check via ABI)", () => {
-      // The TakumiWalletMerchantAbi should contain sweepPlatformFees
-      // and sweepMerchantBacking functions
-      const { TakumiWalletMerchantAbi } = require(
-        "../src/blockchain-verification/abis/takumi-wallet-merchant.abi",
+      // The TakumiPay ABI should contain sweepPlatformFees and
+      // sweepMerchantBacking, plus sweepAllowance (2.3.0), which reports how
+      // much the trailing-24h sweep cap lets leave right now.
+      const { TakumiPayAbi } = require(
+        "../src/blockchain-verification/abis/takumi-pay.abi",
       );
-      const functionNames = TakumiWalletMerchantAbi
+      const functionNames = TakumiPayAbi
         .filter((entry: any) => entry.type === "function")
         .map((entry: any) => entry.name);
 
       expect(functionNames).toContain("sweepPlatformFees");
       expect(functionNames).toContain("sweepMerchantBacking");
+      expect(functionNames).toContain("sweepAllowance");
     });
   });
 
@@ -340,10 +342,10 @@ describe("Security Invariants (ss12.2)", () => {
 
   describe("I-13: Platform fee withdrawal is bounded by cumulative accrual", () => {
     it("sweepPlatformFees ABI has amount parameter and is owner-gated (structural check)", () => {
-      const { TakumiWalletMerchantAbi } = require(
-        "../src/blockchain-verification/abis/takumi-wallet-merchant.abi",
+      const { TakumiPayAbi } = require(
+        "../src/blockchain-verification/abis/takumi-pay.abi",
       );
-      const sweep = TakumiWalletMerchantAbi.find(
+      const sweep = TakumiPayAbi.find(
         (entry: any) => entry.type === "function" && entry.name === "sweepPlatformFees",
       );
       expect(sweep).toBeDefined();

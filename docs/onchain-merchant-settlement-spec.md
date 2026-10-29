@@ -459,6 +459,8 @@ function rotateBackendSigner(address next) external onlyOwner {
 }
 ```
 
+> **Superseded by contract 2.3.0.** `sweepMerchantBacking` can no longer dip into fee-accrual territory: it is bounded by `balance - platformFeeAccrued[token]`. The whole-treasury exits (`withdraw`, `withdrawAll`, `executeWithdrawal`, `recoverToken`) still can. When one does, the contract lowers `platformFeeAccrued` to the balance left and emits `PlatformFeesSwept` for the fees it took. Every capped exit also shares one per-token limit: no 24h span can see more than `sweepCap[token]` leave. See `contract/evm/docs/olympix-bugpocer-response-2.2.0.md` (5.2.2, 5.2.5).
+
 **On-chain invariants enforced:**
 1. Quote is signed by the current `backendSigner` (else `BAD_QUOTE`).
 2. Quote has not expired (else `QUOTE_EXPIRED`).
@@ -524,7 +526,7 @@ const platformFeeAmount = totalAmount - merchantBacking;
 **Invariants (enforced at three layers):**
 1. Backend: `platformFeeAmount + merchantBacking === totalAmount` (unit test).
 2. Contract: `platformFeeAmount <= amount` (revert `FEE_EXCEEDS_AMOUNT`).
-3. Treasury reconcile: `Σ MerchantPayment.platformFeeAmount per token == platformFeeAccrued[token] + Σ PlatformFeesSwept(amount)` (ops dashboard query).
+3. Treasury reconcile: `Σ MerchantPayment.platformFeeAmount per token == platformFeeAccrued[token] + Σ PlatformFeesSwept(amount)` (ops dashboard query). Still exact in contract 2.3.0: when a withdrawal takes fee-backed balance, the contract lowers `platformFeeAccrued` and emits `PlatformFeesSwept` for the same amount.
 
 **Zero-fee case** (`platformFeeBps = 0` or merchant-tier override): `platformFeeAmount = 0`, struct field still present, event still fires. No special-casing — keeps the code path uniform.
 
@@ -1003,7 +1005,7 @@ Mechanism: `safeTransferFrom(msg.sender, this, amount)` pulls from the front-run
 Mechanism: `PayoutService.verifyXenditWebhookSignature` (and Duitku equivalent) verify provider HMAC/token before mutating `ProviderPayout.status`. Already in place per `payout.service.ts:147-152`. No change required for the onchain rail — disbursement is rail-agnostic.
 
 **I-13: Platform fee withdrawal is bounded by cumulative accrual.**
-Mechanism: `sweepPlatformFees(token, recipient, amount)` requires `amount <= platformFeeAccrued[token]` and decrements the counter atomically. Platform treasury cannot accidentally (or maliciously via compromised owner) dip into merchant-backing custody via the fee-sweep function. A bug in the fee-bps math upstream is upper-bounded by the accrued counter — it cannot extract more than was labeled as fee in actual payments. Merchant-backing sweep (`sweepMerchantBacking`) uses a separate code path with full owner discretion, making the blast radius of a compromised owner key auditable (the two sweep events are distinct).
+Mechanism: `sweepPlatformFees(token, recipient, amount)` requires `amount <= platformFeeAccrued[token]` and decrements the counter atomically. Platform treasury cannot accidentally (or maliciously via compromised owner) dip into merchant-backing custody via the fee-sweep function. A bug in the fee-bps math upstream is upper-bounded by the accrued counter — it cannot extract more than was labeled as fee in actual payments. Merchant-backing sweep (`sweepMerchantBacking`) uses a separate code path, making the blast radius of a compromised owner key auditable (the two sweep events are distinct). Since contract 2.3.0 it cannot take the balance backing accrued fees, and every exit shares a per-token cap that no 24h span can exceed.
 
 **I-14: Per-chain finality threshold is enforced at settlement time.**
 Mechanism: `OnchainSettlementProvider.minConfirmations(chain)` (§4.4) resolves in order: `Blockchain.minConfirmations` → `ONCHAIN_MIN_CONFIRMATIONS` env → `MIN_CONFIRMATIONS` env → `12`. viem's `waitForTransactionReceipt({ confirmations })` enforces the value. A misconfigured chain (null `minConfirmations`, no env override) falls back to 12 — safe for L1, potentially insufficient for fast L2s; the pre-launch checklist (§12.7 item 16) gates this.

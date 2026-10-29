@@ -11,14 +11,15 @@
  * This calls sweepMerchantBacking(token, recipient, amount) on the contract.
  * Requires ADMIN_WALLET_PRIVATE_KEY in env (the contract owner key).
  *
- * Unlike sweepPlatformFees, this function does NOT bound by an accrued
- * counter — the owner can withdraw any amount up to the contract's token
- * balance. This is a safety valve; ops must respect the invariant that
- * merchant-backing funds should not exceed what has been settled minus
- * what has already been off-ramped.
+ * Since contract 2.3.0 the amount is bounded by the token balance minus
+ * platformFeeAccrued[token]: the balance backing accrued fees leaves only
+ * through sweepPlatformFees. Like every exit it is also bounded by the
+ * per-token sweep cap, which no 24h span can exceed; sweepAllowance(token)
+ * returns what can leave right now.
  *
  * Pre-flight checks:
- *   1. Verify amount <= contract token balance
+ *   1. Verify amount <= token balance - platformFeeAccrued[token], and
+ *      amount <= sweepAllowance(token)
  *   2. Verify the caller key matches the contract owner
  *   3. Display a confirmation prompt before executing
  *
@@ -57,7 +58,7 @@ export async function main() {
   //
   // import { createWalletClient, http } from "viem";
   // import { privateKeyToAccount } from "viem/accounts";
-  // import { TakumiPayAbi } from "../blockchain-verification/abis/takumi-wallet-merchant.abi";
+  // import { TakumiPayAbi } from "../blockchain-verification/abis/takumi-pay.abi";
   //
   // const account = privateKeyToAccount(process.env.ADMIN_WALLET_PRIVATE_KEY as `0x${string}`);
   // const client = createWalletClient({ account, chain, transport: http(rpcUrl) });

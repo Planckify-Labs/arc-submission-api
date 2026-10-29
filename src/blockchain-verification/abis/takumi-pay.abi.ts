@@ -1,5 +1,5 @@
 /**
- * ABI for the `TakumiPay` contract (version 2.1.0), generated verbatim from
+ * ABI for the `TakumiPay` contract (version 2.3.0), generated verbatim from
  * `contract/evm/out/TakumiPay.sol/TakumiPay.json`. Do not hand-edit —
  * regenerate from the compiled artifact after any contract change.
  *
@@ -1016,6 +1016,11 @@ export const TakumiPayAbi = [
         type: "address",
         internalType: "address",
       },
+      {
+        name: "initialNativeAliasToken",
+        type: "address",
+        internalType: "address",
+      },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -1324,6 +1329,19 @@ export const TakumiPayAbi = [
   },
   {
     type: "function",
+    name: "queueUpgrade",
+    inputs: [
+      {
+        name: "newImplementation",
+        type: "address",
+        internalType: "address",
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "queueWithdrawal",
     inputs: [
       {
@@ -1406,6 +1424,19 @@ export const TakumiPayAbi = [
     inputs: [
       {
         name: "token",
+        type: "address",
+        internalType: "address",
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "rescueNativeDust",
+    inputs: [
+      {
+        name: "to",
         type: "address",
         internalType: "address",
       },
@@ -1513,6 +1544,25 @@ export const TakumiPayAbi = [
     ],
     outputs: [],
     stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "sweepAllowance",
+    inputs: [
+      {
+        name: "token",
+        type: "address",
+        internalType: "address",
+      },
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256",
+      },
+    ],
+    stateMutability: "view",
   },
   {
     type: "function",
@@ -1772,6 +1822,19 @@ export const TakumiPayAbi = [
   {
     type: "function",
     name: "withdrawalDelay",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256",
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "withdrawalDelayRaisedAt",
     inputs: [],
     outputs: [
       {
@@ -2074,6 +2137,25 @@ export const TakumiPayAbi = [
   },
   {
     type: "event",
+    name: "NativeDustRescued",
+    inputs: [
+      {
+        name: "to",
+        type: "address",
+        indexed: true,
+        internalType: "address",
+      },
+      {
+        name: "amount",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
     name: "OwnershipTransferCancelled",
     inputs: [
       {
@@ -2349,6 +2431,25 @@ export const TakumiPayAbi = [
   },
   {
     type: "event",
+    name: "UpgradeQueued",
+    inputs: [
+      {
+        name: "implementation",
+        type: "address",
+        indexed: true,
+        internalType: "address",
+      },
+      {
+        name: "unlockTime",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
     name: "Upgraded",
     inputs: [
       {
@@ -2474,6 +2575,16 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "AliasDecimalsUnsupported",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "AlreadyAdmin",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "AlreadyOwner",
     inputs: [],
   },
@@ -2484,7 +2595,22 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "BatchTooLarge",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "ContractPaused",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "DelayTooLong",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "DuplicateRefInBatch",
     inputs: [],
   },
   {
@@ -2532,6 +2658,16 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "EmptyBatch",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "ExceedsSpendingLimit",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "FailedCall",
     inputs: [],
   },
@@ -2547,6 +2683,16 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "FeeOnTransferNotSupported",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "IndexInconsistency",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "InsufficientBalance",
     inputs: [],
   },
@@ -2557,7 +2703,17 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "InvalidRange",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "InvalidStringLength",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "LimitTooLarge",
     inputs: [],
   },
   {
@@ -2572,6 +2728,11 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "NativeAliasRequired",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "NativeAmountMismatch",
     inputs: [],
   },
@@ -2582,7 +2743,27 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "NativeFeesOutstanding",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "NativeNotAliased",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "NativeSweepCapSet",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "NativeTransferFailed",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "NoImplementationCode",
     inputs: [],
   },
   {
@@ -2593,6 +2774,11 @@ export const TakumiPayAbi = [
   {
     type: "error",
     name: "NotALoosening",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "NotAdmin",
     inputs: [],
   },
   {
@@ -2618,6 +2804,11 @@ export const TakumiPayAbi = [
   {
     type: "error",
     name: "PaymentNotFound",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "PointDepositNotFound",
     inputs: [],
   },
   {
@@ -2663,6 +2854,11 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "SweepLogFull",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "TimelockActive",
     inputs: [],
   },
@@ -2673,7 +2869,17 @@ export const TakumiPayAbi = [
   },
   {
     type: "error",
+    name: "TokenAlreadyAllowed",
+    inputs: [],
+  },
+  {
+    type: "error",
     name: "TokenNotAllowed",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "TransactionNotFound",
     inputs: [],
   },
   {
@@ -2695,6 +2901,31 @@ export const TakumiPayAbi = [
   {
     type: "error",
     name: "UnexpectedNative",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "UpgradeNotQueued",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "WithdrawalAlreadyCancelled",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "WithdrawalAlreadyExecuted",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "WithdrawalDelayNotSet",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "WithdrawalNotFound",
     inputs: [],
   },
   {
