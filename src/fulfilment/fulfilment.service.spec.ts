@@ -7,6 +7,7 @@ import type { VendorOrderStatus } from "../providers/vendor-api/base/base-vendor
 import type { DeliveryParserService } from "../delivery/delivery-parser.service";
 import type { PointsRefundService } from "../points/points-refund.service";
 import type { PushService } from "../push/push.service";
+import type { PointsHoldService } from "../points-hold/points-hold.service";
 import type { Queue } from "bullmq";
 
 type AnyFn = jest.Mock;
@@ -67,9 +68,23 @@ function buildHarness(
     /** What the adapter reads from the order's cached vendor body. */
     cached?: unknown;
     flipCount?: number;
+    /** The booking paid part of the price with held points. */
+    held?: { points: bigint; consume: "CONSUMED" | "RELEASED" | "NONE" };
+    /** What the transaction row recorded as the token part, in IDR. */
+    tokenPartFiat?: string;
   } = {},
 ) {
-  const row = purchaseRow(opts.row);
+  const base = purchaseRow(opts.row);
+  const row = opts.held
+    ? {
+        ...base,
+        bookingOrder: {
+          ...base.bookingOrder,
+          id: "book_1",
+          pointsApplied: opts.held.points,
+        },
+      }
+    : base;
   const prisma = {
     purchase: {
       findUnique: jest.fn(async () => row),
@@ -83,7 +98,7 @@ function buildHarness(
     },
     transactionHistory: {
       findFirst: jest.fn(async () => ({
-        amountInFiat: "50000",
+        amountInFiat: opts.tokenPartFiat ?? "50000",
         fiatCurrency: "IDR",
         userId: "u1",
       })),
@@ -129,6 +144,9 @@ function buildHarness(
   const push = {
     sendFulfilmentPush: jest.fn(async () => undefined),
   } as unknown as PushService;
+  const holds = {
+    consume: jest.fn(async () => opts.held?.consume ?? "NONE"),
+  } as unknown as jest.Mocked<PointsHoldService>;
   const svc = new FulfilmentService(
     prisma,
     queue,
@@ -136,8 +154,20 @@ function buildHarness(
     parser,
     refunds,
     push,
+    holds,
   );
-  return { svc, prisma, queue, vendors, adapter, parser, refunds, push, row };
+  return {
+    svc,
+    prisma,
+    queue,
+    vendors,
+    adapter,
+    parser,
+    refunds,
+    push,
+    holds,
+    row,
+  };
 }
 
 const flushPush = () => new Promise((r) => setImmediate(r));
@@ -430,6 +460,97 @@ describe("FulfilmentService — order placement outcomes", () => {
     );
     expect(flip).toBeDefined();
   });
+
+  it("an unverified payment goes to ops, never to a points refund", async () => {
+    const { svc, refunds, prisma } = buildHarness({
+      row: { fulfilmentStatus: "QUEUED", vendorRefId: null },
+    });
+    await svc.onPaymentUnverified("purchase", "pur_1", "rpc down");
+    expect(refunds.refund).not.toHaveBeenCalled();
+    const flip = (prisma.purchase.updateMany as AnyFn).mock.calls.find(
+      (c) => c[0].data.fulfilmentStatus === "NEEDS_RECONCILE",
+    );
+    expect(flip?.[0].data.fulfilmentError).toMatch(/payment not verified/);
+  });
+});
+
+describe("FulfilmentService refunds with points held for the booking", () => {
+  // 100,000 IDR product: 30,000 points + 70,000 IDR paid in tokens.
+  const held = (consume: "CONSUMED" | "RELEASED" | "NONE") => ({
+    held: { points: 30000n, consume },
+    tokenPartFiat: "70000",
+    row: { fulfilmentStatus: "QUEUED" },
+  });
+
+  it("a delivery failure after the hold was consumed refunds both parts, once", async () => {
+    const h = buildHarness(held("CONSUMED"));
+    await h.svc.onOrderRetriesExhausted("purchase", "pur_1", {
+      orderAttempted: false,
+      error: "x",
+    });
+    expect(h.holds.consume).toHaveBeenCalledWith("book_1");
+    expect(h.refunds.refund).toHaveBeenCalledTimes(1);
+    expect(h.refunds.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ points: 100000n, fiatAmount: "100000" }),
+    );
+  });
+
+  it("settling an order whose hold is still HELD takes it over (HELD -> CONSUMED) and refunds both parts", async () => {
+    // The late-payment path: the worker never consumed the hold.
+    const h = buildHarness(held("CONSUMED"));
+    await h.svc.onOrderRetriesExhausted("purchase", "pur_1", {
+      orderAttempted: false,
+      error: "booking expired",
+    });
+    expect(h.holds.consume).toHaveBeenCalledTimes(1);
+    expect(h.refunds.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ points: 100000n }),
+    );
+  });
+
+  it("a hold the sweep already released refunds only the token part", async () => {
+    const h = buildHarness(held("RELEASED"));
+    await h.svc.onOrderRetriesExhausted("purchase", "pur_1", {
+      orderAttempted: false,
+      error: "x",
+    });
+    expect(h.refunds.refund).toHaveBeenCalledTimes(1);
+    expect(h.refunds.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ points: 70000n, fiatAmount: "70000" }),
+    );
+  });
+
+  it("an interrupted settle finished later computes the same full amount, without a second push or credit path", async () => {
+    const h = buildHarness({
+      ...held("CONSUMED"),
+      row: { fulfilmentStatus: "FAILED" },
+    });
+    await h.svc.finishStrandedRefund("purchase", "pur_1");
+    expect(h.refunds.refund).toHaveBeenCalledTimes(1);
+    expect(h.refunds.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ points: 100000n }),
+    );
+    // A second pass on an already-refunded order does nothing.
+    const done = buildHarness({
+      ...held("CONSUMED"),
+      row: { fulfilmentStatus: "REFUNDED" },
+    });
+    await done.svc.finishStrandedRefund("purchase", "pur_1");
+    expect(done.refunds.refund).not.toHaveBeenCalled();
+    expect(done.holds.consume).not.toHaveBeenCalled();
+  });
+
+  it("a booking without points behaves exactly as before and never touches the hold", async () => {
+    const h = buildHarness({ row: { fulfilmentStatus: "QUEUED" } });
+    await h.svc.onOrderRetriesExhausted("purchase", "pur_1", {
+      orderAttempted: false,
+      error: "x",
+    });
+    expect(h.holds.consume).not.toHaveBeenCalled();
+    expect(h.refunds.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ points: 50000n, fiatAmount: "50000" }),
+    );
+  });
 });
 
 describe("FulfilmentService.resolveManually", () => {
@@ -547,5 +668,37 @@ describe("FulfilmentService.check — legacy QUEUED orders", () => {
       (c) => c[0].data.fulfilmentStatus,
     );
     expect(statusFlip).toBeUndefined();
+  });
+});
+
+describe("FulfilmentService.finishStrandedRefund", () => {
+  it("credits an order left at FAILED by an interrupted settle", async () => {
+    const h = buildHarness({ row: { fulfilmentStatus: "FAILED" } });
+    await h.svc.finishStrandedRefund("purchase", "p1");
+    expect(h.refunds.refund).toHaveBeenCalledTimes(1);
+    expect(h.refunds.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "purchase", points: 50000n }),
+    );
+  });
+
+  it.each(["REFUNDED", "DELIVERED", "SUBMITTED"])(
+    "does nothing for an order at %s",
+    async (fulfilmentStatus) => {
+      const h = buildHarness({ row: { fulfilmentStatus } });
+      await h.svc.finishStrandedRefund("purchase", "p1");
+      expect(h.refunds.refund).not.toHaveBeenCalled();
+    },
+  );
+
+  it("is reached by a retried settle that finds the order already FAILED", async () => {
+    const h = buildHarness({
+      row: { fulfilmentStatus: "FAILED" },
+      flipCount: 0,
+    });
+    await h.svc.onOrderRetriesExhausted("purchase", "p1", {
+      orderAttempted: false,
+      error: "paid after the booking expired",
+    });
+    expect(h.refunds.refund).toHaveBeenCalledTimes(1);
   });
 });

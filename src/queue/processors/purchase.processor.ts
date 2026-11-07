@@ -1,9 +1,15 @@
 import { Processor, WorkerHost, OnWorkerEvent } from "@nestjs/bullmq";
 import { Logger } from "@nestjs/common";
-import { Job } from "bullmq";
+import { ConfigService } from "@nestjs/config";
+import { Job, UnrecoverableError } from "bullmq";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PushService } from "../../push/push.service";
 import { BlockchainVerificationService } from "../../blockchain-verification/blockchain-verification.service";
+import {
+  classifySettlementError,
+  resolveMinConfirmations,
+  settlementBackoffStrategy,
+} from "../../blockchain-verification/settlement-policy";
 import { VendorRegistry } from "../../providers/vendor-api/vendor-registry.service";
 import { ReferenceIdService } from "../../reference-id/reference-id.service";
 import { BlockchainCacheService } from "../../valkey/services/blockchain-cache.service";
@@ -22,9 +28,32 @@ import {
   Prisma,
 } from "@generated/prisma";
 import { BookingStatus } from "../../booking/enums/booking-status.enum";
+import { BOOKING_PAYMENT_GRACE_MS } from "../../booking/booking.constants";
+import { PointsHoldService } from "../../points-hold/points-hold.service";
 import { TBookingWithRelations } from "../types/booking.types";
 
-@Processor("purchase-processing", { concurrency: 10 })
+/**
+ * How many times the post-payment stage (vendor order and what follows it)
+ * may fail before the order is handed to the fulfilment leg's retries-
+ * exhausted path. This is NOT the job's attempt budget: verification waits
+ * for the chain on the long settlement schedule (`SETTLEMENT_MAX_ATTEMPTS`),
+ * and those attempts must never turn into vendor orders.
+ */
+export const VENDOR_STAGE_MAX_ATTEMPTS = 3;
+
+export { BOOKING_PAYMENT_GRACE_MS };
+
+/**
+ * Outcome rules follow `settlement-policy.ts`: the buyer is told the payment
+ * failed only when the CHAIN said so (reverted, or a mined record that is not
+ * the booked payment). Anything on our side (RPC down, receipt not there yet)
+ * is retried silently on the long schedule, and a job that is still without a
+ * verdict at the end goes to ops, not to FAILED.
+ */
+@Processor("purchase-processing", {
+  concurrency: 10,
+  settings: { backoffStrategy: settlementBackoffStrategy },
+})
 export class PurchaseProcessor extends WorkerHost {
   private readonly logger = new Logger(PurchaseProcessor.name);
 
@@ -38,6 +67,8 @@ export class PurchaseProcessor extends WorkerHost {
     private readonly tokenCache: TokenCacheService,
     private readonly pushService: PushService,
     private readonly fulfilment: FulfilmentService,
+    private readonly config: ConfigService,
+    private readonly holds: PointsHoldService,
   ) {
     super();
   }
@@ -59,15 +90,17 @@ export class PurchaseProcessor extends WorkerHost {
 
     this.logger.log(`Processing purchase job ${job.id} for refId: ${refId}`);
 
-    // What the buyer is told on failure depends on how far we got: before
-    // the chain verified the payment nothing was delivered and the charge
-    // is in doubt; after it, they HAVE paid and the vendor is our problem.
+    // What happens on failure depends on how far we got: before the chain
+    // verified the payment nothing was delivered and the charge is in doubt;
+    // after it, they HAVE paid and the vendor is our problem.
     let paymentVerified = false;
+    let stage: "prepare" | "verify" = "prepare";
     let productName: string | null = null;
-    // Whether `createOrder` was called at all. Decides, once retries are
-    // gone, between "refund — the vendor never heard of this" and "ops —
-    // an order may exist on the vendor side".
-    let orderAttempted = false;
+    // Whether `createOrder` was called at all, on this attempt or an earlier
+    // one (persisted in the job data). Decides, once retries are gone,
+    // between "refund — the vendor never heard of this" and "ops — an order
+    // may exist on the vendor side".
+    let orderAttempted = job.data.vendorOrderAttempted === true;
 
     try {
       const existingPurchase = await this.prisma.purchase.findUnique({
@@ -77,6 +110,7 @@ export class PurchaseProcessor extends WorkerHost {
       if (!existingPurchase) {
         throw new Error(`Purchase with ID ${purchaseId} not found`);
       }
+      if (existingPurchase.vendorRefId) orderAttempted = true;
 
       await this.updatePurchaseStatus(refId, {
         refId,
@@ -116,21 +150,28 @@ export class PurchaseProcessor extends WorkerHost {
         );
       }
 
-      await this.verifyBlockchainTransaction(
+      stage = "verify";
+      const verification = await this.verifyBlockchainTransaction({
         transactionHash,
-        walletAddress,
-        contractAddress,
-        booking.blockchain.chainId ?? 0,
+        expectedSender: walletAddress,
+        expectedRecipient: contractAddress,
+        expectedTokenAddress: booking.payment.tokenAddress,
+        expectedChainId: booking.blockchain.chainId ?? 0,
         refId,
         contractAddress,
-        booking.id,
-        (
-          booking.exchangeRate as { id?: number | string } | null
-        )?.id?.toString() || "0",
-        booking.productVariantId,
-        booking.payment.amount,
-        booking.blockchain.id,
-      );
+        expectedBookingId: booking.id,
+        expectedExchangeRateId:
+          (
+            booking.exchangeRate as { id?: number | string } | null
+          )?.id?.toString() || "0",
+        expectedProductVariantId: booking.productVariantId,
+        expectedAmount: booking.payment.amount,
+        blockchainId: booking.blockchain.id,
+        minimumConfirmations: resolveMinConfirmations(
+          booking.blockchain,
+          this.config,
+        ),
+      });
 
       paymentVerified = true;
 
@@ -154,6 +195,63 @@ export class PurchaseProcessor extends WorkerHost {
         message: "Blockchain transaction verified successfully",
       });
 
+      // The booking lock is judged by CHAIN time only: when the contract
+      // recorded the payment, never when we got the POST or processed it. A
+      // payment mined in time but confirmed slowly, or delivered late by the
+      // mobile outbox, is fulfilled even if the row is already EXPIRED. Once
+      // an order is attempted (or accepted) this was already decided.
+      if (!orderAttempted) {
+        const problem = this.paymentWindowProblem(
+          booking.status,
+          booking.expiresAt,
+          verification.recordTimestamp,
+        );
+        if (problem === "no_timestamp") {
+          // Not evidence of a late payment: ops decides, never a refund.
+          await this.fulfilment.onPaymentUnverified(
+            "purchase",
+            purchaseId,
+            "contract record carried no timestamp; cannot judge the booking window",
+          );
+          return { success: false, purchaseId, transactionId: transaction.id };
+        }
+        if (problem) {
+          // The money arrived (the transaction row stays CONFIRMED) but the
+          // booking was gone: no vendor order, points refund and push via the
+          // fulfilment leg, no retries. Both writes below are idempotent, so
+          // a redelivered job repeats nothing. The refund also settles any
+          // held points (HELD -> CONSUMED, returned with the token part).
+          await this.refundWithoutOrder({
+            errorType: "booking_expired",
+            message: problem,
+            refId,
+            purchaseId,
+            bookingId,
+            walletAddress,
+          });
+          return { success: false, purchaseId, transactionId: transaction.id };
+        }
+
+        // The payment is in time: the points held for it are now spent for
+        // good (HELD -> CONSUMED; already CONSUMED on a retry, NONE when the
+        // booking used no points). If the sweep released them first, the
+        // buyer already has those points back, so the order must not run;
+        // the token part is refunded and the buyer stays whole.
+        const hold = await this.holds.consume(bookingId);
+        if (hold === "RELEASED") {
+          await this.refundWithoutOrder({
+            errorType: "points_hold_released",
+            message:
+              "the points held for this booking were released before the payment arrived",
+            refId,
+            purchaseId,
+            bookingId,
+            walletAddress,
+          });
+          return { success: false, purchaseId, transactionId: transaction.id };
+        }
+      }
+
       // Any vendor with an adapter is fulfilled the same way; the adapter
       // is resolved from the price row, never named here.
       if (this.vendors.has(booking.productPrice?.vendor?.name)) {
@@ -161,6 +259,7 @@ export class PurchaseProcessor extends WorkerHost {
           purchaseId,
           booking as unknown as TBookingWithRelations,
           refId,
+          existingPurchase.vendorRefId,
           () => {
             orderAttempted = true;
           },
@@ -230,23 +329,68 @@ export class PurchaseProcessor extends WorkerHost {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
-        `Purchase job ${job.id} failed for refId: ${refId}:`,
+        `Purchase job ${job.id} failed for refId: ${refId} (attempt ${job.attemptsMade + 1}):`,
         error,
       );
 
-      await this.prisma.purchase.update({
-        where: { id: purchaseId },
-        data: { status: PurchaseStatus.FAILED },
-      });
+      if (!paymentVerified) {
+        // Only a verification error can be a chain verdict. A failure while
+        // preparing (booking lookup, DB, config) says nothing about the
+        // chain, so it is never classified as one.
+        const outcome =
+          stage === "verify" ? classifySettlementError(error) : "transient";
 
-      await this.updatePurchaseStatus(refId, {
-        refId,
-        purchaseId,
-        status: "failed",
-        stage: "error",
-        message: "Purchase processing failed",
-        error: errorMessage,
-      });
+        if (outcome !== "transient") {
+          // The chain has spoken; retrying cannot change it.
+          await this.failOnChainVerdict({
+            outcome,
+            errorMessage,
+            refId,
+            purchaseId,
+            bookingId,
+            walletAddress,
+            productName,
+          });
+          return { success: false, purchaseId };
+        }
+
+        // No verdict yet. The purchase stays in progress and BullMQ retries
+        // on the long schedule; nothing is recorded as failed and the buyer
+        // hears nothing. Out of retries, it is ops' call, not FAILED.
+        if (job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {
+          await this.fulfilment
+            .onPaymentUnverified("purchase", purchaseId, errorMessage)
+            .catch((err) =>
+              this.logger.error(
+                `[purchase] hand-off to ops failed for ${purchaseId}: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            );
+        }
+        throw error;
+      }
+
+      // They HAVE paid; what failed is the vendor stage. It has its own small
+      // budget, counted in the job data because `attemptsMade` also counts
+      // every verification attempt before it.
+      const vendorAttempts = (job.data.vendorAttempts ?? 0) + 1;
+      const exhausted =
+        vendorAttempts >= VENDOR_STAGE_MAX_ATTEMPTS ||
+        job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+
+      if (!exhausted) {
+        await job
+          .updateData({
+            ...job.data,
+            vendorAttempts,
+            vendorOrderAttempted: orderAttempted,
+          })
+          .catch((err) =>
+            this.logger.warn(
+              `[purchase] could not persist vendor attempt count for ${purchaseId}: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        throw error;
+      }
 
       await this.referenceIdService.markAsFailed(refId, {
         requestType: "PURCHASE",
@@ -256,37 +400,129 @@ export class PurchaseProcessor extends WorkerHost {
         error: errorMessage,
         errorType: "purchase_processing_error",
       });
-
-      // Only once BullMQ is out of retries — an attempt that will be
-      // retried is not an outcome the buyer needs to hear about.
-      const budget = job.opts.attempts ?? 1;
-      if (job.attemptsMade + 1 >= budget) {
-        if (paymentVerified) {
-          // They HAVE paid. Refund if the vendor was never reached, hand
-          // to ops if an order might exist over there.
-          await this.fulfilment
-            .onOrderRetriesExhausted("purchase", purchaseId, {
-              orderAttempted,
-              error: errorMessage,
-            })
-            .catch((err) =>
-              this.logger.error(
-                `[purchase] fulfilment settle failed for ${purchaseId}: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-            );
-        } else {
-          this.notifyBuyer({
-            walletAddress,
-            purchaseId,
-            bookingId,
-            productName: productName ?? "your order",
-            outcome: "payment_failed",
-          });
-        }
-      }
-
-      throw error;
+      // Refund if the vendor was never reached, hand to ops if an order
+      // might exist over there.
+      await this.fulfilment
+        .onOrderRetriesExhausted("purchase", purchaseId, {
+          orderAttempted,
+          error: errorMessage,
+        })
+        .catch((err) =>
+          this.logger.error(
+            `[purchase] fulfilment settle failed for ${purchaseId}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      // Settled. Stop here: with the long job budget a plain rethrow would
+      // run the vendor stage again.
+      throw new UnrecoverableError(errorMessage);
     }
+  }
+
+  /** FAILED (idempotent), reference failed, then the fulfilment leg refunds as points. A failing refund throws so the job retries. */
+  private async refundWithoutOrder(input: {
+    errorType: "booking_expired" | "points_hold_released";
+    message: string;
+    refId: string;
+    purchaseId: string;
+    bookingId: string;
+    walletAddress: string;
+  }): Promise<void> {
+    const { errorType, message, refId, purchaseId, bookingId } = input;
+    await this.prisma.purchase.update({
+      where: { id: purchaseId },
+      data: { status: PurchaseStatus.FAILED },
+    });
+    await this.referenceIdService.markAsFailed(refId, {
+      requestType: "PURCHASE",
+      walletAddress: input.walletAddress,
+      bookingId,
+      purchaseId,
+      error: message,
+      errorType,
+    });
+    await this.fulfilment.onOrderRetriesExhausted("purchase", purchaseId, {
+      orderAttempted: false,
+      error: message,
+    });
+  }
+
+  /**
+   * Whether a verified payment still belongs to its booking. Returns a reason
+   * string when it does not, "no_timestamp" when it cannot be judged, null
+   * when fine. `recordTimestamp` is unix seconds from the contract record.
+   */
+  private paymentWindowProblem(
+    status: string,
+    expiresAt: Date,
+    recordTimestamp: string | undefined,
+  ): string | null {
+    if (status === BookingStatus.CANCELLED) {
+      return "booking was cancelled before payment was processed";
+    }
+    const seconds = Number(recordTimestamp ?? 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "no_timestamp";
+    const paidAtMs = seconds * 1000;
+    const deadlineMs = expiresAt.getTime() + BOOKING_PAYMENT_GRACE_MS;
+    if (paidAtMs > deadlineMs) {
+      return `booking expired: payment was mined at ${new Date(paidAtMs).toISOString()}, after ${new Date(deadlineMs).toISOString()}`;
+    }
+    return null;
+  }
+
+  /**
+   * The chain refused the payment (reverted) or mined something that is not
+   * the booked payment (mismatch). Final for this transaction: FAILED now,
+   * no retries, the buyer is told.
+   */
+  private async failOnChainVerdict(input: {
+    outcome: "rejected_reverted" | "rejected_mismatch";
+    errorMessage: string;
+    refId: string;
+    purchaseId: string;
+    bookingId: string;
+    walletAddress: string;
+    productName: string | null;
+  }): Promise<void> {
+    const { outcome, errorMessage, refId, purchaseId, bookingId } = input;
+    this.logger.warn(
+      `[purchase] chain verdict ${outcome} for purchase ${purchaseId}: ${errorMessage}`,
+    );
+
+    await this.prisma.purchase.update({
+      where: { id: purchaseId },
+      data: { status: PurchaseStatus.FAILED },
+    });
+
+    await this.updatePurchaseStatus(refId, {
+      refId,
+      purchaseId,
+      status: "failed",
+      stage: "error",
+      message: "Purchase processing failed",
+      error: errorMessage,
+    });
+
+    await this.referenceIdService.markAsFailed(refId, {
+      requestType: "PURCHASE",
+      walletAddress: input.walletAddress,
+      bookingId,
+      purchaseId,
+      error: errorMessage,
+      errorType: "purchase_processing_error",
+    });
+
+    // Nothing moved on-chain (or what moved is not this payment): the points
+    // held for the booking go back. Idempotent; a failure here throws so the
+    // job runs again and releases them.
+    await this.holds.release(bookingId, `chain verdict ${outcome}`);
+
+    this.notifyBuyer({
+      walletAddress: input.walletAddress,
+      purchaseId,
+      bookingId,
+      productName: input.productName ?? "your order",
+      outcome: "payment_failed",
+    });
   }
 
   /** Best-effort: a push problem must never change the purchase outcome. */
@@ -415,34 +651,23 @@ export class PurchaseProcessor extends WorkerHost {
     return token;
   }
 
-  private async verifyBlockchainTransaction(
-    transactionHash: string,
-    expectedSender: string,
-    expectedRecipient: string,
-    expectedChainId: number,
-    refId: string,
-    contractAddress: string,
-    expectedBookingId: string,
-    expectedExchangeRateId: string,
-    expectedProductVariantId: string,
-    expectedAmount: string,
-    blockchainId: string,
-  ) {
+  private async verifyBlockchainTransaction(args: {
+    transactionHash: string;
+    expectedSender: string;
+    expectedRecipient: string;
+    expectedTokenAddress: string;
+    expectedChainId: number;
+    refId: string;
+    contractAddress: string;
+    expectedBookingId: string;
+    expectedExchangeRateId: string;
+    expectedProductVariantId: string;
+    expectedAmount: string;
+    blockchainId: string;
+    minimumConfirmations: number;
+  }) {
     const verificationResult =
-      await this.blockchainVerificationService.verifyTransaction({
-        transactionHash,
-        expectedSender,
-        expectedRecipient,
-        expectedChainId,
-        minimumConfirmations: 12,
-        refId,
-        contractAddress,
-        expectedBookingId,
-        expectedExchangeRateId,
-        expectedProductVariantId,
-        expectedAmount,
-        blockchainId,
-      });
+      await this.blockchainVerificationService.verifyTransaction(args);
 
     this.logger.log(`Transaction verification successful:`, {
       hash: verificationResult.transactionHash,
@@ -465,8 +690,18 @@ export class PurchaseProcessor extends WorkerHost {
     purchaseId: string,
     booking: TBookingWithRelations,
     refId: string,
+    acceptedVendorRefId: string | null,
     onAttempt: () => void,
   ): Promise<boolean> {
+    // A retry after the vendor already accepted (the failure was further
+    // along) must not place a second order.
+    if (acceptedVendorRefId) {
+      this.logger.log(
+        `[purchase] ${purchaseId} already has vendor order ${acceptedVendorRefId}; not ordering again`,
+      );
+      return true;
+    }
+
     await this.updatePurchaseStatus(refId, {
       refId,
       purchaseId,

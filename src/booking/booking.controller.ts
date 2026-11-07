@@ -30,6 +30,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { addressesEqual } from "../auth/address-compare";
 import { Roles } from "../decorators/roles.decorator";
 import { UserRole } from "@generated/prisma";
+import { assertCallerOwnsWallet } from "./wallet-ownership";
 
 @Controller("bookings")
 @ApiTags("bookings")
@@ -52,8 +53,12 @@ export class BookingController {
   @Post()
   @UseGuards(BookingRateLimitGuard)
   @ApiCreateBooking()
-  createBooking(@Body() createBookingDto: CreateBookingDto) {
-    return this.bookingService.createBooking(createBookingDto);
+  createBooking(
+    @Body() createBookingDto: CreateBookingDto,
+    @Request() req: { user?: { id?: string; walletAddress?: string | null } },
+  ) {
+    assertCallerOwnsWallet(req.user, createBookingDto.walletAddress);
+    return this.bookingService.createBooking(createBookingDto, req.user?.id);
   }
 
   @Get("wallet/:walletAddress")

@@ -243,12 +243,19 @@ export class PurchasesService {
     const rate = exchangeRateObj?.rate || 0;
     const sellPrice =
       bookingForMetadata.productPrice?.sellPrice?.toString() || "0";
-    const amountInFiat =
+    const fullFiat =
       rate &&
       sellPrice &&
       exchangeRateObj?.toCurrency == bookingForMetadata.productPrice?.currency
         ? sellPrice
         : (Number(sellPrice) * rate).toString() || "0";
+    // The part paid in tokens. Points applied (1 pt = Rp 1) are refunded
+    // separately from the booking's hold, so this must not include them.
+    const pointsApplied = bookingForMetadata.pointsApplied ?? 0n;
+    const amountInFiat =
+      pointsApplied > 0n
+        ? new Prisma.Decimal(fullFiat).sub(pointsApplied.toString()).toString()
+        : fullFiat;
 
     const placeholderTransaction = await this.prisma.transactionHistory.create({
       data: {
@@ -374,6 +381,7 @@ export class PurchasesService {
           createdAt: true,
           customerInfo: true,
           walletAddress: true,
+          pointsApplied: true,
         },
       },
       refund: { select: { status: true, points: true } },
@@ -447,11 +455,14 @@ export class PurchasesService {
       createdAt: bookingOrder.createdAt,
       customerInfo: bookingOrder.customerInfo,
     };
+    // Points that paid part of the price; the token part is `transaction.amount`.
+    const pointsApplied = (bookingOrder.pointsApplied ?? 0n).toString();
 
     if (options?.vendorResponse) {
       return {
         ...rest,
         bookingOrder: booking,
+        pointsApplied,
         transaction,
         vendorName: this.extractVendorName(purchase.vendorStatusResponse),
         voucherCode,
@@ -475,6 +486,7 @@ export class PurchasesService {
       voucherCode,
       fulfilment,
       booking,
+      pointsApplied,
     };
   }
 

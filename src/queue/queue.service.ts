@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
+import { SETTLEMENT_JOB_OPTIONS } from "../blockchain-verification/settlement-policy";
 import {
   TPurchaseJobData,
   TBlockchainVerificationJobData,
@@ -18,7 +19,12 @@ export class QueueService {
   ) {}
 
   async addPurchaseJob(data: TPurchaseJobData): Promise<string> {
+    // The payer has already paid on-chain by the time this runs, so the job
+    // rides the same long settlement schedule as merchant payments and point
+    // deposits instead of the queue's 3 quick attempts (the processor's own
+    // vendor budget is separate; see VENDOR_STAGE_MAX_ATTEMPTS).
     const job = await this.purchaseQueue.add("process-purchase", data, {
+      ...SETTLEMENT_JOB_OPTIONS,
       jobId: `purchase-${data.refId}`,
       delay: 0,
     });

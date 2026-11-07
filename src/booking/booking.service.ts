@@ -14,7 +14,7 @@ import {
 } from "./interfaces/booking.interface";
 import { PrismaService } from "../prisma/prisma.service";
 import { BookingQueryDto } from "./dto/booking-query.dto";
-import { Prisma } from "@generated/prisma";
+import { Prisma, PointsHoldStatus } from "@generated/prisma";
 const Decimal = Prisma.Decimal;
 import { BookingStatus } from "./enums/booking-status.enum";
 import { BlockchainsService } from "../blockchains/blockchains.service";
@@ -23,6 +23,18 @@ import {
 } from "../products/services/product-input-validator.service";
 import { BookingCacheService } from "../valkey/services/booking-cache.service";
 import { addressesEqual } from "../auth/address-compare";
+import { ExchangeRateService } from "../exchange-rate/exchange-rate.service";
+import { PointsHoldService } from "../points-hold/points-hold.service";
+import { computePointsApplied } from "../points-hold/points-allocation";
+
+// Enough digits that dividing an 18-decimal-scaled fiat price by a rate never
+// rounds before we round up. Prisma's default (20 significant digits) can drop
+// the last wei of a large amount, and the rounding mode is ROUND_UP so a
+// shortfall can only ever land on the buyer's side of the ledger.
+const TokenAmountDecimal = Decimal.clone({
+  precision: 60,
+  rounding: Decimal.ROUND_UP,
+});
 
 @Injectable()
 export class BookingService {
@@ -34,6 +46,8 @@ export class BookingService {
     private readonly blockchainsService: BlockchainsService,
     private readonly productInputValidator: ProductInputValidatorService,
     private readonly bookingCache: BookingCacheService,
+    private readonly exchangeRateService: ExchangeRateService,
+    private readonly holds: PointsHoldService,
   ) {
     this.BOOKING_EXPIRY_MINUTES = this.configService.get(
       "BOOKING_EXPIRY_MINUTES",
@@ -41,13 +55,14 @@ export class BookingService {
     );
   }
 
-  async createBooking(createBookingDto: CreateBookingDto) {
+  async createBooking(createBookingDto: CreateBookingDto, userId?: string) {
     const {
       walletAddress,
       productVariantId,
       productPriceId,
       payment,
       customerInfo,
+      usePoints,
     } = createBookingDto;
 
     const booking = await this.prisma.$transaction(async (tx) => {
@@ -118,50 +133,53 @@ export class BookingService {
 
       const productPrice = productVariant.ProductPrice[0];
 
-      const exchangeRate = await tx.exchangeRate.findFirst({
-        where: {
-          id: payment.exchangeRateId,
-          isActive: true,
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
+      // The token amount below is derived from the ACTIVE price, and
+      // `purchases.service` later derives `amountInFiat` (and so any refund)
+      // from the price row stored on the booking. A client-supplied id that
+      // names some other (pricier) row must therefore never be stored.
+      if (productPriceId !== productPrice.id) {
+        throw new BadRequestException(
+          `Product price ${productPriceId} is not the active price for variant ${productVariantId}`,
+        );
+      }
+
+      // The server picks the rate, never the client: the latest rate for
+      // (token -> price currency) from the same lookup the points deposit
+      // uses, so both payment modes price identically. `payment.exchangeRateId`
+      // is still accepted for older clients but is not read.
+      const exchangeRate = await this.exchangeRateService.findLatest({
+        fromCurrency: token.symbol,
+        toCurrency: productPrice.currency,
       });
 
-      if (!exchangeRate) {
+      if (!exchangeRate || !exchangeRate.isActive || !(exchangeRate.rate > 0)) {
         throw new BadRequestException(
-          `Exchange rate with ID ${payment.exchangeRateId} not found`,
+          `No active exchange rate for ${token.symbol} -> ${productPrice.currency}`,
         );
       }
 
-      if (!exchangeRate.isActive) {
-        throw new BadRequestException(
-          `Exchange rate with ID ${payment.exchangeRateId} is no longer active`,
-        );
-      }
+      // Points first: the server decides how many (the client sends no
+      // number). Nothing applicable is a normal booking, not an error.
+      const pointsApplied =
+        usePoints && userId
+          ? computePointsApplied({
+              sellPrice: productPrice.sellPrice.toString(),
+              rate: exchangeRate.rate,
+              balance: await this.holds.balanceOf(tx, userId),
+            })
+          : 0n;
 
-      if (exchangeRate.fromCurrency !== token.symbol) {
-        throw new BadRequestException(
-          `Exchange rate ${payment.exchangeRateId} is for ${exchangeRate.fromCurrency}, but token is ${token.symbol}`,
-        );
-      }
-
-      if (exchangeRate.toCurrency !== productPrice.currency) {
-        throw new BadRequestException(
-          `Product price currency (${productPrice.currency}) does not match exchange rate target currency (${exchangeRate.toCurrency})`,
-        );
-      }
-
-      const sellPrice = new Decimal(productPrice.sellPrice.toString());
-      const rate = new Decimal(exchangeRate.rate.toString());
-      const tokenAmountDecimal = sellPrice.div(rate);
-
-      const tokenAmount = BigInt(
-        Math.floor(
-          parseFloat(tokenAmountDecimal.toString()) *
-            Math.pow(10, token.decimals),
-        ),
-      ).toString();
+      // ceil((sellPrice - pointsApplied) x 10^decimals / rate) in the token's
+      // smallest unit. The product margin is already in sellPrice;
+      // `ExchangeRate.markup` (QRIS merchant payments) is deliberately NOT
+      // applied here, or the buyer would pay the margin twice. Rounded UP so
+      // the buyer is never undercharged by a fraction of a wei.
+      const tokenAmount = new TokenAmountDecimal(productPrice.sellPrice.toString())
+        .sub(pointsApplied.toString())
+        .mul(new TokenAmountDecimal(10).pow(token.decimals))
+        .div(new TokenAmountDecimal(exchangeRate.rate.toString()))
+        .toDecimalPlaces(0, Decimal.ROUND_UP)
+        .toFixed(0);
 
       const booking = await tx.bookingOrder.create({
         data: {
@@ -171,7 +189,7 @@ export class BookingService {
           payment: {
             tokenAddress: payment.tokenAddress,
             blockchainNetworkId: blockchain.id,
-            amount: tokenAmount.toString(),
+            amount: tokenAmount,
           },
           exchangeRate: {
             id: exchangeRate.id,
@@ -180,6 +198,9 @@ export class BookingService {
             toCurrency: exchangeRate.toCurrency,
             lockedAt: new Date().toISOString(),
           },
+          pointsApplied,
+          pointsHoldStatus:
+            pointsApplied > 0n ? PointsHoldStatus.HELD : PointsHoldStatus.NONE,
           customerInfo:
             validatedCustomerInfo as unknown as Prisma.InputJsonValue,
           status: "PENDING" as BookingStatus,
@@ -197,11 +218,21 @@ export class BookingService {
         },
       });
 
+      // Same transaction as the booking: either both exist or neither does.
+      if (pointsApplied > 0n && userId) {
+        await this.holds.holdInTx(tx, {
+          userId,
+          bookingId: booking.id,
+          points: pointsApplied,
+        });
+      }
+
       return this.formatBookingResponse(booking as unknown as DbBooking);
     });
 
     // Invalidate user's booking cache after creating new booking
     await this.bookingCache.invalidateUserBookings(walletAddress);
+    if (usePoints && userId) await this.holds.invalidate(userId);
 
     return booking;
   }
@@ -270,6 +301,10 @@ export class BookingService {
         expiresAt: {
           lt: new Date(),
         },
+        // A purchase row means the buyer has already paid and handed us the
+        // tx; it may be waiting on confirmations for far longer than the
+        // booking lock lasts. Expiry only ever applies to abandoned bookings.
+        purchase: null,
       },
       data: {
         status: BookingStatus.EXPIRED as BookingStatus,
@@ -332,6 +367,7 @@ export class BookingService {
   ) {
     const booking = await this.prisma.bookingOrder.findUnique({
       where: { id: bookingId },
+      include: { purchase: { select: { id: true } } },
     });
 
     if (!booking) {
@@ -353,17 +389,31 @@ export class BookingService {
       );
     }
 
-    const result = await this.prisma.bookingOrder.update({
-      where: { id: bookingId },
-      data: {
-        status: BookingStatus.CANCELLED as BookingStatus,
+    // A purchase means the buyer has paid and handed us the transaction.
+    // Cancelling then would race the worker with money on the chain.
+    const cancelled = await this.prisma.bookingOrder.updateMany({
+      where: {
+        id: bookingId,
+        status: BookingStatus.PENDING as BookingStatus,
+        purchase: null,
       },
+      data: { status: BookingStatus.CANCELLED as BookingStatus },
     });
+    if (cancelled.count !== 1) {
+      throw new BadRequestException(
+        booking.purchase
+          ? "This booking has a payment in progress and can no longer be cancelled"
+          : "Booking can no longer be cancelled",
+      );
+    }
+
+    // Points held for it go back (no-op when none were held).
+    await this.holds.release(bookingId, "booking cancelled");
 
     // Invalidate cache after status change
     await this.bookingCache.invalidateBooking(bookingId, booking.walletAddress);
 
-    return result;
+    return { ...booking, status: BookingStatus.CANCELLED };
   }
 
   async getBookings(walletAddress: string, query: BookingQueryDto) {
@@ -545,9 +595,13 @@ export class BookingService {
           blockchainName: blockchain.name,
         },
         exchangeRate: {
+          id: exchangeRateInfo.id,
           rate: exchangeRateInfo.rate,
           lockedAt: exchangeRateInfo.lockedAt,
         },
+        // Points taken from the buyer's balance, as a string ("0" when none).
+        // The token amount above covers only the rest of the price.
+        pointsApplied: (booking.pointsApplied ?? 0n).toString(),
       },
       status: booking.status,
       expiresAt: booking.expiresAt.toISOString(),

@@ -84,7 +84,7 @@ export function ApiCreateBooking() {
           },
           payment: {
             type: "object",
-            required: ["tokenAddress", "blockchainId", "exchangeRateId"],
+            required: ["tokenAddress", "blockchainId"],
             properties: {
               tokenAddress: {
                 type: "string",
@@ -100,8 +100,9 @@ export function ApiCreateBooking() {
               },
               exchangeRateId: {
                 type: "number",
+                deprecated: true,
                 description:
-                  "The ID of the exchange rate to lock for this booking",
+                  "Ignored. The server locks the latest active rate and returns its id in payment.exchangeRate.id",
                 example: 1,
               },
             },

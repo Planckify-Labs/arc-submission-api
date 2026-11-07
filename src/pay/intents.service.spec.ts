@@ -259,8 +259,8 @@ describe("IntentsService", () => {
     expect(result.nanopay?.validBefore).toBeGreaterThanOrEqual(
       (result.nanopay?.validAfter ?? 0) + 259_200,
     );
-    // 15000 IDR / (15700 × 1.015) = 0.941294... → 941294 micros (floor).
-    expect(result.nanopayUsdcAmountMicros).toBe("941294");
+    // 15000 IDR / 15700 × 1.015 = 0.969745... → 969746 micros (rounded up).
+    expect(result.nanopayUsdcAmountMicros).toBe("969746");
   });
 
   it("404s when the merchant is missing", async () => {
@@ -445,15 +445,45 @@ describe("IntentsService", () => {
 });
 
 describe("computeUsdcMicros", () => {
-  it("matches the spec example: 15000 IDR at 15700 × 1.015 → 941294 micros", () => {
+  it("applies the markup on top: 15000 IDR at 15700 with 1.5% → 969746 micros", () => {
     const mul = addMarkup("1.5");
     const micros = computeUsdcMicros({
       fiatAmountMinor: 15_000n,
       fxRate: "15700",
       markupMultiplier: mul,
     });
-    // 15000 / (15700 × 1.015) = 15000 / 15935.5 = 0.941294... → 941294 (floor).
-    expect(micros).toBe(941_294n);
+    // 15000 / 15700 × 1.015 = 0.969745... → 969746 (rounded up).
+    expect(micros).toBe(969_746n);
+  });
+
+  it("never charges less than the plain conversion when markup is not negative", () => {
+    for (const fiat of [1n, 999n, 15_000n, 50_000n, 1_234_567n]) {
+      for (const fxRate of ["15700", "16234.5", "17690"]) {
+        for (const markup of ["0", "0.5", "1.5", "3"]) {
+          const micros = computeUsdcMicros({
+            fiatAmountMinor: fiat,
+            fxRate,
+            markupMultiplier: addMarkup(markup),
+          });
+          const plain = (Number(fiat) / Number(fxRate)) * 1_000_000;
+          expect(Number(micros)).toBeGreaterThanOrEqual(Math.floor(plain));
+          expect(micros * BigInt(Math.round(Number(fxRate) * 10))).toBeGreaterThanOrEqual(
+            fiat * 10_000_000n,
+          );
+        }
+      }
+    }
+  });
+
+  it("charges more as the markup rises", () => {
+    const at = (markup: string) =>
+      computeUsdcMicros({
+        fiatAmountMinor: 50_000n,
+        fxRate: "17690",
+        markupMultiplier: addMarkup(markup),
+      });
+    expect(at("1.5")).toBeGreaterThan(at("0"));
+    expect(at("3")).toBeGreaterThan(at("1.5"));
   });
 
   it("handles integer rates cleanly", () => {

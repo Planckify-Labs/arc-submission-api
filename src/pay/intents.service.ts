@@ -616,8 +616,8 @@ export class IntentsService {
     }
 
     // Amount math — deliberately in bigint + a Decimal-style string parser.
-    // IDR 15_000 at 15700 IDR/USDC × 1.015 markup →
-    //   usdc = 15000 / (15700 × 1.015) = 0.9409... → 940924 micros.
+    // IDR 15_000 at 15700 IDR/USDC with a 1.5% markup →
+    //   usdc = 15000 / 15700 × 1.015 = 0.969745... → 969746 micros.
     // See computeUsdcMicros for the full algorithm.
     const markupMultiplier = addMarkup(fx.fxMarkup);
     const nanopayUsdcAmountMicros = computeUsdcMicros({
@@ -3366,10 +3366,13 @@ export class IntentsService {
  *   - `markupMultiplier` is `1 + markup_fraction` (e.g. 1.015 for 1.5%).
  *   - Returns USDC atomic units (1e-6 USDC each).
  *
- * Formula:
- *   usdcMicros = fiatMinor × 1_000_000 / (fxRate × markupMultiplier × fiatMinorFactor)
+ * Formula, rounded up:
+ *   usdcMicros = fiatMinor × 1_000_000 × markupMultiplier / (fxRate × fiatMinorFactor)
  * where `fiatMinorFactor` is 1 for IDR (QRIS uses integer rupiah) — change
  * when adding a currency whose minor unit actually differs.
+ *
+ * The markup raises what the payer sends, and rounding up keeps them from
+ * underpaying: result ≥ fiat / fxRate whenever markup ≥ 0.
  *
  * We route both FX rate and markup through a shared string→bigint scaler
  * so a 1.5%-style markup doesn't lose precision to JS number math.
@@ -3379,21 +3382,15 @@ export function computeUsdcMicros(args: {
   fxRate: string;
   markupMultiplier: string;
 }): bigint {
-  const SCALE = 10n ** 18n;
   const rateScaled = parseDecimalToScaled(args.fxRate, 18);
   const markupScaled = parseDecimalToScaled(args.markupMultiplier, 18);
   if (rateScaled <= 0n || markupScaled <= 0n) {
     throw new Error("FX rate and markup must be positive.");
   }
 
-  // divisor = rate × markup, both scaled to 1e18 → product at 1e36.
-  const divisorScaledSq = rateScaled * markupScaled; // 1e36-scaled
-  // numerator = fiatMinor × 1_000_000 × 1e36 (to cancel divisor scale)
-  //           = fiatMinor × 1e6 × 1e36
-  // Result = numerator / divisorScaledSq → fiatMinor × 1e6 / (rate × markup)
-  //          which is the USDC atomic amount.
-  const numerator = args.fiatAmountMinor * 1_000_000n * SCALE * SCALE;
-  return numerator / divisorScaledSq;
+  // Both are scaled to 1e18, so the scales cancel in markup / rate.
+  const numerator = args.fiatAmountMinor * 1_000_000n * markupScaled;
+  return (numerator + rateScaled - 1n) / rateScaled;
 }
 
 /**

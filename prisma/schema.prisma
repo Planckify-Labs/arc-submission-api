@@ -722,9 +722,28 @@ model BookingOrder {
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
+  // Points + tokens in one purchase. `pointsApplied` points (1 pt = Rp 1) are
+  // taken from the buyer's balance when the booking is made (a hold, ledgered
+  // as a SPEND); the rest is paid in tokens. Every hold transition is a
+  // compare-and-set from HELD, so exactly one of CONSUMED / RELEASED wins.
+  // pointTransactionId/CreatedAt reference the PointTransaction hypertable
+  // with NO foreign key.
+  pointsApplied             BigInt           @default(0)
+  pointsHoldStatus          PointsHoldStatus @default(NONE)
+  pointTransactionId        String?
+  pointTransactionCreatedAt DateTime?
+
+  @@index([pointsHoldStatus, expiresAt])
   @@index([walletAddress])
   @@index([walletAddress, createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
+}
+
+enum PointsHoldStatus {
+  NONE
+  HELD
+  CONSUMED
+  RELEASED
 }
 
 enum ApiKeyType {

@@ -5,6 +5,7 @@ import { VendorAPIModule } from "../providers/vendor-api/vendor-api.module";
 import { PushModule } from "../push/push.module";
 import { DeliveryModule } from "../delivery/delivery.module";
 import { PointsModule } from "../points/points.module";
+import { PointsHoldModule } from "../points-hold/points-hold.module";
 import { FulfilmentService } from "./fulfilment.service";
 import { FulfilmentProcessor } from "./fulfilment.processor";
 import { FulfilmentSweeperService } from "./fulfilment-sweeper.service";
@@ -28,6 +29,7 @@ import { FULFILMENT_QUEUE } from "./fulfilment.types";
     PushModule,
     DeliveryModule,
     PointsModule,
+    PointsHoldModule,
   ],
   providers: [FulfilmentService, FulfilmentProcessor, FulfilmentSweeperService],
   exports: [FulfilmentService],

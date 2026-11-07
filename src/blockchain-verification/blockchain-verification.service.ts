@@ -339,7 +339,7 @@ export class BlockchainVerificationService {
             refId: request.refId,
             refIdHash,
             expectedWalletAddress: expectedSender,
-            expectedTokenMint: expectedRecipient,
+            expectedTokenMint: request.expectedTokenAddress,
             expectedAmount: request.expectedAmount,
             expectedBookingId: request.expectedBookingId,
             expectedExchangeRateId: request.expectedExchangeRateId,
@@ -347,16 +347,12 @@ export class BlockchainVerificationService {
           });
         }
         if (family === "STELLAR") {
-          // `expectedRecipient` doubling as the expected token identifier
-          // mirrors the Solana branch above — `TTransactionVerificationRequest`
-          // has no separate expected-token field for the generic
-          // create_transaction flow (see purchase.processor.ts).
           return this.stellarVerification.verifyTransaction({
             blockchainId: request.blockchainId,
             transactionHash,
             refId: request.refId,
             expectedWalletAddress: expectedSender,
-            expectedTokenAddress: expectedRecipient,
+            expectedTokenAddress: request.expectedTokenAddress,
             expectedAmount: request.expectedAmount,
             expectedBookingId: request.expectedBookingId,
             expectedExchangeRateId: request.expectedExchangeRateId,
@@ -402,12 +398,12 @@ export class BlockchainVerificationService {
       );
 
       // Phase B — contract-level verification
-      await this.verifyTransactionInContract({
+      const record = await this.verifyTransactionInContract({
         refId: request.refId,
         contractAddress: request.contractAddress,
         chainId: expectedChainId,
         expectedWalletAddress: transaction.from,
-        expectedTokenAddress: transaction.to ?? "",
+        expectedTokenAddress: request.expectedTokenAddress,
         expectedAmount: request.expectedAmount,
         expectedBookingId: request.expectedBookingId,
         expectedExchangeRateId: request.expectedExchangeRateId,
@@ -416,6 +412,7 @@ export class BlockchainVerificationService {
       this.logger.log(
         `Contract verification successful for refId ${request.refId}`,
       );
+      result.recordTimestamp = record.timestamp.toString();
 
       return result;
     } catch (error) {
@@ -546,12 +543,33 @@ export class BlockchainVerificationService {
       );
 
       const client = this.getClient(trxData.chainId);
-      const contractTransaction = await readContract(client, {
-        address: trxData.contractAddress as `0x${string}`,
-        abi: TakumiPayAbi,
-        functionName: "getTransactionByRef",
-        args: [trxData.refId],
-      });
+      const readRecord = () =>
+        readContract(client, {
+          address: trxData.contractAddress as `0x${string}`,
+          abi: TakumiPayAbi,
+          functionName: "getTransactionByRef",
+          args: [trxData.refId],
+        });
+      let contractTransaction = await readRecord();
+      // The receipt is already in (Phase A), but `eth_call` at "latest" can
+      // land on an upstream that has not imported that block and answer with
+      // an empty struct. A few short retries absorb that lag.
+      for (
+        let attempt = 0;
+        attempt < 3 && contractTransaction.refId === "";
+        attempt++
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        contractTransaction = await readRecord();
+      }
+      if (contractTransaction.refId === "") {
+        // Deliberately not worded "mismatch": an absent record is "not
+        // visible yet" until proven otherwise, which the settlement policy
+        // retries silently, instead of a chain verdict that fails the order.
+        throw new BadRequestException(
+          `Contract has no record for refId ${trxData.refId} yet`,
+        );
+      }
 
       const transaction: TTakumiWalletTransaction = {
         walletAddress: contractTransaction.walletAddress,
@@ -582,16 +600,15 @@ export class BlockchainVerificationService {
         );
       }
 
-      const isNativeToken =
-        trxData.expectedTokenAddress ===
-          "0x0000000000000000000000000000000000000000" ||
-        trxData.expectedTokenAddress.toLowerCase() ===
-          trxData.contractAddress.toLowerCase();
-
+      // Strict, always. The contract records address(0) for native payments,
+      // so a native booking expects the zero address and nothing else. There
+      // is deliberately no "native" shortcut: treating an expected token equal
+      // to the contract address as native used to skip this check entirely, so
+      // a buyer could book in a 6-decimal stablecoin and pay the same raw
+      // amount in another allowed token (or native) with 18 decimals.
       if (
-        !isNativeToken &&
         transaction.tokenAddress.toLowerCase() !==
-          trxData.expectedTokenAddress.toLowerCase()
+        trxData.expectedTokenAddress.toLowerCase()
       ) {
         throw new BadRequestException(
           `Contract token address mismatch: expected ${trxData.expectedTokenAddress}, got ${transaction.tokenAddress}`,

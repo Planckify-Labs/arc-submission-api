@@ -8,6 +8,9 @@ import { ProductsModule } from "../products/products.module";
 import { ValkeyModule } from "../valkey/valkey.module";
 import { PushModule } from "../push/push.module";
 import { BookingReminderService } from "./booking-reminder.service";
+import { BookingExpiryService } from "./booking-expiry.service";
+import { PointsHoldModule } from "../points-hold/points-hold.module";
+import { ExchangeRateModule } from "../exchange-rate/exchange-rate.module";
 
 @Module({
   imports: [
@@ -17,9 +20,11 @@ import { BookingReminderService } from "./booking-reminder.service";
     ProductsModule,
     ValkeyModule,
     PushModule,
+    ExchangeRateModule,
+    PointsHoldModule,
   ],
   controllers: [BookingController],
-  providers: [BookingService, BookingReminderService],
+  providers: [BookingService, BookingReminderService, BookingExpiryService],
   exports: [BookingService],
 })
 export class BookingModule {}

@@ -181,6 +181,38 @@ describe("PurchasesService.create — happy path", () => {
     });
   });
 
+  it("records only the token part as amountInFiat when points paid for the rest", async () => {
+    const { svc, prisma } = buildHarness({
+      booking: {
+        id: "book_1",
+        walletAddress: "0xUSER",
+        productVariantId: "pv_1",
+        pointsApplied: 30000n,
+        productPrice: { sellPrice: "100000", currency: "IDR" },
+        payment: {
+          tokenAddress: "0xUSDC",
+          blockchainNetworkId: "bc_polygon",
+          amount: "4458599",
+        },
+        exchangeRate: { rate: 15700, fromCurrency: "USDC", toCurrency: "IDR" },
+      },
+    });
+    await svc.create(validDto());
+    expect(
+      (prisma.transactionHistory.create as jest.Mock).mock.calls[0][0].data
+        .amountInFiat,
+    ).toBe("70000");
+  });
+
+  it("a booking with no points keeps amountInFiat at sellPrice", async () => {
+    const { svc, prisma } = buildHarness();
+    await svc.create(validDto());
+    expect(
+      (prisma.transactionHistory.create as jest.Mock).mock.calls[0][0].data
+        .amountInFiat,
+    ).toBe("100000");
+  });
+
   it("reuses an existing user when wallet already known (no user.create)", async () => {
     const { svc, prisma } = buildHarness({ user: { id: "user_existing" } });
     await svc.create(validDto());

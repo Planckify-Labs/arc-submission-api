@@ -1,9 +1,12 @@
+import { readContract } from "viem/actions";
 import type { ConfigService } from "@nestjs/config";
 import type { PrismaService } from "../prisma/prisma.service";
 import { BlockchainVerificationService } from "./blockchain-verification.service";
 import { SolanaVerificationService } from "./solana-verification.service";
 import { StellarVerificationService } from "./stellar-verification.service";
 import type { TTransactionVerificationResult } from "./types/blockchain-verification.types";
+
+jest.mock("viem/actions", () => ({ readContract: jest.fn() }));
 
 const SOLANA_BLOCKCHAIN_ID = "blockchain_solana_devnet";
 const STELLAR_BLOCKCHAIN_ID = "blockchain_stellar_testnet";
@@ -17,6 +20,7 @@ const baseRequest = {
   transactionHash: "5WbxpNm8...",
   expectedSender: "SenderAddr",
   expectedRecipient: "RecipientAddr",
+  expectedTokenAddress: "BookedTokenAddr",
   expectedChainId: 0,
   refId: "ref_001",
   contractAddress: "ContractAddr",
@@ -168,7 +172,7 @@ describe("BlockchainVerificationService.verifyTransaction routing", () => {
         transactionSignature: baseRequest.transactionHash,
         refId: baseRequest.refId,
         expectedWalletAddress: baseRequest.expectedSender,
-        expectedTokenMint: baseRequest.expectedRecipient,
+        expectedTokenMint: baseRequest.expectedTokenAddress,
         expectedAmount: baseRequest.expectedAmount,
         expectedBookingId: baseRequest.expectedBookingId,
         expectedExchangeRateId: baseRequest.expectedExchangeRateId,
@@ -240,7 +244,7 @@ describe("BlockchainVerificationService.verifyTransaction routing", () => {
         transactionHash: baseRequest.transactionHash,
         refId: baseRequest.refId,
         expectedWalletAddress: baseRequest.expectedSender,
-        expectedTokenAddress: baseRequest.expectedRecipient,
+        expectedTokenAddress: baseRequest.expectedTokenAddress,
         expectedAmount: baseRequest.expectedAmount,
         expectedBookingId: baseRequest.expectedBookingId,
         expectedExchangeRateId: baseRequest.expectedExchangeRateId,
@@ -280,5 +284,128 @@ describe("BlockchainVerificationService.verifyTransaction routing", () => {
         blockchainId: "blockchain_mystery",
       }),
     ).rejects.toThrow(/Unrecognized chain family "GARBAGE"/);
+  });
+});
+
+
+describe("BlockchainVerificationService.verifyTransaction token check (EVM)", () => {
+  const CONTRACT = "0xC0ffee254729296a45a3885639AC7E10F9d54979";
+  const BOOKED_TOKEN = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+  const OTHER_TOKEN = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
+  const NATIVE = "0x0000000000000000000000000000000000000000";
+  const PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+  const request = {
+    transactionHash: "0xhash",
+    expectedSender: PAYER,
+    expectedRecipient: CONTRACT,
+    expectedTokenAddress: BOOKED_TOKEN,
+    expectedChainId: EVM_CHAIN_ID,
+    refId: "ref_001",
+    contractAddress: CONTRACT,
+    expectedBookingId: "booking_001",
+    expectedExchangeRateId: "42",
+    expectedProductVariantId: "variant_001",
+    expectedAmount: "1000000",
+    blockchainId: EVM_BLOCKCHAIN_ID,
+  };
+
+  const record = (overrides: Record<string, unknown> = {}) => ({
+    walletAddress: PAYER,
+    tokenAddress: BOOKED_TOKEN,
+    bookingId: "booking_001",
+    exchangeRateId: 42n,
+    productVariantId: "variant_001",
+    timestamp: 1n,
+    refId: "ref_001",
+    amount: 1000000n,
+    ...overrides,
+  });
+
+  async function evmService(contractRecord: Record<string, unknown>) {
+    const { svc } = buildService();
+    // The constructor kicks off an async client refresh; let it settle so it
+    // cannot replace the stub client below.
+    await new Promise((resolve) => setImmediate(resolve));
+    (svc as unknown as { clients: Map<number, unknown> }).clients.set(
+      EVM_CHAIN_ID,
+      { getBlock: jest.fn(async () => ({ timestamp: 1n })) },
+    );
+    jest.spyOn(svc, "verifyTxReceiptOnly").mockResolvedValue({
+      receipt: {
+        transactionHash: "0xhash",
+        blockNumber: 1n,
+        status: "success",
+        gasUsed: 21000n,
+      },
+      // `to` is the CONTRACT, which is what used to be mistaken for the token.
+      transaction: { from: PAYER, to: CONTRACT, value: 0n, chainId: EVM_CHAIN_ID },
+      confirmations: 12,
+    } as never);
+    (readContract as jest.Mock).mockResolvedValue(contractRecord);
+    return svc;
+  }
+
+  afterEach(() => jest.useRealTimers());
+
+  it("accepts a payment in the booked token", async () => {
+    const svc = await evmService(record());
+    await expect(svc.verifyTransaction(request)).resolves.toMatchObject({
+      isValid: true,
+    });
+  });
+
+  it("rejects a payment recorded in a different allowed token", async () => {
+    const svc = await evmService(record({ tokenAddress: OTHER_TOKEN }));
+    await expect(svc.verifyTransaction(request)).rejects.toThrow(
+      /token address mismatch/,
+    );
+  });
+
+  it("rejects a native payment for a booking made in a stablecoin", async () => {
+    const svc = await evmService(record({ tokenAddress: NATIVE }));
+    await expect(svc.verifyTransaction(request)).rejects.toThrow(
+      /token address mismatch/,
+    );
+  });
+
+  it("rejects a token payment for a booking made in the native currency", async () => {
+    const svc = await evmService(record({ tokenAddress: BOOKED_TOKEN }));
+    await expect(
+      svc.verifyTransaction({ ...request, expectedTokenAddress: NATIVE }),
+    ).rejects.toThrow(/token address mismatch/);
+  });
+
+  it("accepts a native payment for a native booking", async () => {
+    const svc = await evmService(record({ tokenAddress: NATIVE }));
+    await expect(
+      svc.verifyTransaction({ ...request, expectedTokenAddress: NATIVE }),
+    ).resolves.toMatchObject({ isValid: true });
+  });
+
+  it("no longer treats the contract address as 'native' (the old bypass)", async () => {
+    const svc = await evmService(record({ tokenAddress: OTHER_TOKEN }));
+    await expect(
+      svc.verifyTransaction({ ...request, expectedTokenAddress: CONTRACT }),
+    ).rejects.toThrow(/token address mismatch/);
+  });
+
+  it("compares the token case-insensitively", async () => {
+    const svc = await evmService(
+      record({ tokenAddress: BOOKED_TOKEN.toLowerCase() }),
+    );
+    await expect(svc.verifyTransaction(request)).resolves.toMatchObject({
+      isValid: true,
+    });
+  });
+
+  it("an absent record is not visible yet, not a chain-verdict mismatch", async () => {
+    const svc = await evmService(record({ refId: "" }));
+    jest.useFakeTimers();
+    const outcome = svc.verifyTransaction(request).catch((e: Error) => e);
+    await jest.advanceTimersByTimeAsync(10_000);
+    const err = (await outcome) as Error;
+    expect(err.message).toMatch(/has no record for refId/);
+    expect(err.message).not.toMatch(/mismatch/i);
   });
 });

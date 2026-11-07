@@ -1,3 +1,4 @@
+import { PointsHoldService } from "../points-hold/points-hold.service";
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
@@ -72,6 +73,7 @@ export class FulfilmentService {
     private readonly parser: DeliveryParserService,
     private readonly refunds: PointsRefundService,
     private readonly push: PushService,
+    private readonly holds: PointsHoldService,
   ) {}
 
   // ── entry points for the order workers ─────────────────────────────
@@ -152,6 +154,20 @@ export class FulfilmentService {
       id,
       `vendor outcome unknown: ${input.error}`,
     );
+  }
+
+  /**
+   * The payment never got a chain verdict within the retry budget (RPC down,
+   * receipt not available). We do not know whether the money moved, so this
+   * is ops' call: never an automatic refund (points are only refunded for
+   * a payment we verified), never a "failed".
+   */
+  async onPaymentUnverified(
+    kind: FulfilmentKind,
+    id: string,
+    error: string,
+  ): Promise<void> {
+    await this.markReconcile(kind, id, `payment not verified: ${error}`);
   }
 
   // ── the poll ───────────────────────────────────────────────────────
@@ -347,10 +363,41 @@ export class FulfilmentService {
       this.logger.debug(
         `[fulfilment] ${kind} ${id} not open, skip settleFailed`,
       );
+      // A retry can land here after the run that flipped it died mid-refund.
+      await this.finishStrandedRefund(kind, id);
       return;
     }
     this.logger.warn(`[fulfilment] ${kind} ${id} FAILED: ${reason}`);
+    await this.issueRefund(kind, id, target, reason, source, adminId);
+  }
 
+  /**
+   * Completes the refund for an order left at FAILED by an interrupted
+   * settle: the status flip and the credit are separate writes, and only
+   * `settleFailed` sets FAILED, so FAILED without a refund row means the
+   * credit never landed. Safe to repeat: the credit is a compare-and-set from
+   * FAILED and `FulfilmentRefund` is unique per order.
+   */
+  async finishStrandedRefund(kind: FulfilmentKind, id: string): Promise<void> {
+    const target = await this.load(kind, id);
+    if (target.fulfilmentStatus !== FulfilmentStatus.FAILED) return;
+    await this.issueRefund(
+      kind,
+      id,
+      target,
+      "refund retried after an interrupted settle",
+      "auto",
+    );
+  }
+
+  private async issueRefund(
+    kind: FulfilmentKind,
+    id: string,
+    target: FulfilmentTarget,
+    reason: string,
+    source: "auto" | "admin",
+    adminId?: string,
+  ): Promise<void> {
     const amount = await this.refundAmount(target);
     const userId = target.userId ?? (await this.userIdFor(target));
     if (!userId) {
@@ -726,6 +773,8 @@ export class FulfilmentService {
         transactionCreatedAt: true,
         bookingOrder: {
           select: {
+            id: true,
+            pointsApplied: true,
             productPrice: { select: { sellPrice: true, currency: true } },
           },
         },
@@ -733,25 +782,47 @@ export class FulfilmentService {
     });
     if (!p) return { points: null, fiatAmount: null, currency: null };
 
+    // Part of the price may have been paid with held points. Whatever
+    // settles this order must hand them back too, exactly once: first
+    // HELD -> CONSUMED (idempotent; a no-op for bookings without points),
+    // then the points come back only if the hold is ours (CONSUMED). A hold
+    // the sweep already released was credited back then, so only the token
+    // part remains owed. Deterministic on repeat, so an interrupted settle
+    // (`finishStrandedRefund`) computes the same amount.
+    const held = p.bookingOrder.pointsApplied ?? 0n;
+    let pointsPart = 0n;
+    if (held > 0n) {
+      const hold = await this.holds.consume(p.bookingOrder.id);
+      if (hold === "CONSUMED") pointsPart = held;
+    }
+
     const tx = await this.prisma.transactionHistory.findFirst({
       where: { id: p.transactionId, createdAt: p.transactionCreatedAt },
       select: { amountInFiat: true, fiatCurrency: true },
     });
     const ceil = (v: Prisma.Decimal | string | number) =>
       BigInt(new Prisma.Decimal(v.toString()).ceil().toFixed(0));
+    const total = (tokenPart: Prisma.Decimal | string | number) =>
+      new Prisma.Decimal(tokenPart.toString())
+        .add(pointsPart.toString())
+        .toString();
 
+    // `amountInFiat` is already the token part (price minus points applied).
     if (tx && tx.fiatCurrency === "IDR" && tx.amountInFiat) {
       return {
-        points: ceil(tx.amountInFiat),
-        fiatAmount: tx.amountInFiat.toString(),
+        points: ceil(tx.amountInFiat) + pointsPart,
+        fiatAmount: total(tx.amountInFiat),
         currency: "IDR",
       };
     }
     const price = p.bookingOrder.productPrice;
     if (price.currency === "IDR") {
+      const tokenPart = new Prisma.Decimal(price.sellPrice.toString()).sub(
+        held.toString(),
+      );
       return {
-        points: ceil(price.sellPrice),
-        fiatAmount: price.sellPrice.toString(),
+        points: ceil(tokenPart) + pointsPart,
+        fiatAmount: total(tokenPart),
         currency: "IDR",
       };
     }

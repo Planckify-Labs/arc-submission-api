@@ -41,6 +41,7 @@ export interface DbBooking {
   exchangeRate: JsonValue;
   status: BookingStatus;
   expiresAt: Date;
+  pointsApplied?: bigint;
   createdAt: Date;
   updatedAt: Date;
   productVariant: ProductVariant & { product: Product };

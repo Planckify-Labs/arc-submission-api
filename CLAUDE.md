@@ -40,7 +40,7 @@ pnpm prisma db seed      # Seed database (runs src/scripts/prisma/seed.ts)
 
 ### Core Flow: Booking -> Payment -> Purchase
 
-1. **Booking** (`src/booking/`): User reserves a product with price locked via exchange rate. Bookings expire after configurable time (default 15 min).
+1. **Booking** (`src/booking/`): User reserves a product with price locked via exchange rate. Bookings expire after configurable time (default 15 min). A per-minute sweep (`BookingExpiryService`) expires unpaid ones (never a booking that has a purchase). A payment is judged against the window by CHAIN time only: the contract record's `timestamp` (exposed as `recordTimestamp` by `verifyTransaction`). Mined after `expiresAt` + `BOOKING_PAYMENT_GRACE_MS` (120s) or booking CANCELLED -> no vendor order, points refund via `onOrderRetriesExhausted`, reference failed as `booking_expired`; no record timestamp -> ops (`onPaymentUnverified`), never a refund.
 2. **Transaction** (`src/transactions/`): User submits blockchain transaction hash after payment.
 3. **Blockchain Verification** (`src/blockchain-verification/`): Verifies transaction on-chain using `viem`. Validates against smart contract state via `getTransactionByRef`.
 4. **Queue Processing** (`src/queue/`): BullMQ queues handle async processing - purchase fulfillment, blockchain verification retries, vendor API calls.
@@ -61,6 +61,8 @@ Wallet-based auth uses SIWE (Sign-In with Ethereum). Admin auth uses username/pa
 - **ValkeyModule**: Redis-compatible cache (Valkey). Services for nonce caching, rate limiting, vendor API response caching.
 - **QueueModule**: BullMQ job queues - `purchase-processing`, `blockchain-verification`, `vendor-api-calls`.
 - **BlockchainVerificationModule**: Multi-chain support. Dynamically creates viem clients from database-stored blockchain configs.
+- **PointsHoldModule** (`src/points-hold/`): points + tokens in one purchase. `POST /bookings {usePoints}` lets the server pick `pointsApplied` (`computePointsApplied`; `MIN_TOKEN_REMAINDER_USD` = 0.3 is also served as `productPayment.minTokenRemainderUsd`) and takes them at once (`BookingOrder.pointsHoldStatus` HELD, SPEND ledger row, same transaction as the booking). Every transition is a compare-and-set from HELD: CONSUMED by the purchase worker once the payment is verified and in the window, RELEASED (credit + REFUND row) by the sweep (expiresAt + grace + 5 min, no purchase), by `cancelBooking` (refused once a purchase exists) or by a chain verdict. A payment that finds the hold RELEASED places no order (`points_hold_released`); `FulfilmentService.refundAmount` does HELD -> CONSUMED first and refunds token part + points when CONSUMED, token part only when RELEASED. `amountInFiat` is the token part only.
+- **AppConfigModule** (`src/app-config/`): public `GET /app-config` -> `{ productPayment: { mode } }`, from env `PRODUCT_PAYMENT_MODE` (`TOKEN` default | `POINTS`; empty or invalid = `TOKEN`). The mode only decides what clients offer; `/bookings`, `/purchases`, `/redeem` and `/points` stay live in both.
 
 ### Fulfilment leg (vendor accepted ≠ delivered)
 

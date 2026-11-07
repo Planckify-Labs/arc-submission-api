@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from "@nestjs/common";
@@ -10,6 +11,8 @@ import type { BlockchainsService } from "../blockchains/blockchains.service";
 import type { ProductInputValidatorService } from "../products/services/product-input-validator.service";
 import type { PrismaService } from "../prisma/prisma.service";
 import type { BookingCacheService } from "../valkey/services/booking-cache.service";
+import type { ExchangeRateService } from "../exchange-rate/exchange-rate.service";
+import type { PointsHoldService } from "../points-hold/points-hold.service";
 
 /**
  * BookingService unit tests.
@@ -60,7 +63,7 @@ const PRODUCT_VARIANT = {
 
 const ACTIVE_EXCHANGE_RATE = {
   id: 42,
-  rate: "15700",
+  rate: 15700,
   fromCurrency: "USDC",
   toCurrency: "IDR",
   isActive: true,
@@ -75,6 +78,10 @@ interface PrismaStubOpts {
   bookingFindFirst?: Record<string, unknown> | null;
   bookings?: Record<string, unknown>[];
   customerInfoValid?: boolean;
+  /** Buyer's points balance. */
+  balance?: bigint;
+  /** Make the guarded decrement lose a race. */
+  holdConflict?: boolean;
 }
 
 function buildHarness(opts: PrismaStubOpts = {}) {
@@ -88,13 +95,14 @@ function buildHarness(opts: PrismaStubOpts = {}) {
   const txCalls = {
     tokenFindUnique: jest.fn(async () => token),
     productVariantFindUnique: jest.fn(async () => productVariant),
-    exchangeRateFindFirst: jest.fn(async () => exchangeRate),
     bookingOrderCreate: jest.fn(async ({ data }: { data: Record<string, unknown> }) => ({
       id: "booking_001",
       walletAddress: data.walletAddress,
       productVariantId: data.productVariantId,
       productPriceId: data.productPriceId,
       payment: data.payment,
+      pointsApplied: data.pointsApplied,
+      pointsHoldStatus: data.pointsHoldStatus,
       exchangeRate: data.exchangeRate,
       customerInfo: data.customerInfo,
       status: data.status,
@@ -109,7 +117,6 @@ function buildHarness(opts: PrismaStubOpts = {}) {
   const tx: Record<string, unknown> = {
     token: { findUnique: txCalls.tokenFindUnique },
     productVariant: { findUnique: txCalls.productVariantFindUnique },
-    exchangeRate: { findFirst: txCalls.exchangeRateFindFirst },
     bookingOrder: { create: txCalls.bookingOrderCreate },
   };
 
@@ -124,7 +131,7 @@ function buildHarness(opts: PrismaStubOpts = {}) {
         id: "booking_001",
         ...data,
       })),
-      updateMany: jest.fn(async () => ({ count: 0 })),
+      updateMany: jest.fn(async () => ({ count: 1 })),
     },
     token: {
       findUnique: jest.fn(async () => token),
@@ -157,15 +164,41 @@ function buildHarness(opts: PrismaStubOpts = {}) {
     get: jest.fn((_key: string, defaultValue: number) => defaultValue),
   } as unknown as ConfigService;
 
+  const exchangeRateService = {
+    findLatest: jest.fn(async () => exchangeRate),
+  } as unknown as ExchangeRateService;
+
+  const holds = {
+    balanceOf: jest.fn(async () => opts.balance ?? 0n),
+    holdInTx: jest.fn(async () => {
+      if (opts.holdConflict) {
+        throw new ConflictException("Your points balance changed");
+      }
+    }),
+    invalidate: jest.fn(async () => undefined),
+    release: jest.fn(async () => true),
+  } as unknown as jest.Mocked<PointsHoldService>;
+
   const svc = new BookingService(
     prisma,
     config,
     blockchainsService,
     productInputValidator,
     bookingCache,
+    exchangeRateService,
+    holds,
   );
 
-  return { svc, prisma, blockchainsService, bookingCache, productInputValidator, txCalls };
+  return {
+    svc,
+    prisma,
+    blockchainsService,
+    bookingCache,
+    productInputValidator,
+    exchangeRateService,
+    holds,
+    txCalls,
+  };
 }
 
 const validDto = () => ({
@@ -252,22 +285,89 @@ describe("BookingService.createBooking", () => {
     );
   });
 
-  it("rejects when exchange rate fromCurrency does not match token symbol", async () => {
-    const { svc } = buildHarness({
-      exchangeRate: { ...ACTIVE_EXCHANGE_RATE, fromCurrency: "ETH" },
+  it("rejects when the latest exchange rate is no longer active", async () => {
+    const { svc, txCalls } = buildHarness({
+      exchangeRate: { ...ACTIVE_EXCHANGE_RATE, isActive: false },
     });
     await expect(svc.createBooking(validDto())).rejects.toBeInstanceOf(
       BadRequestException,
+    );
+    expect(txCalls.bookingOrderCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-positive rate instead of dividing by it", async () => {
+    const { svc, txCalls } = buildHarness({
+      exchangeRate: { ...ACTIVE_EXCHANGE_RATE, rate: 0 },
+    });
+    await expect(svc.createBooking(validDto())).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(txCalls.bookingOrderCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a productPriceId that is not the active price", async () => {
+    const { svc, txCalls } = buildHarness();
+    await expect(
+      svc.createBooking({ ...validDto(), productPriceId: "pp_pricier" }),
+    ).rejects.toThrow(/not the active price/);
+    expect(txCalls.bookingOrderCreate).not.toHaveBeenCalled();
+  });
+
+  it("stores the active price id it validated", async () => {
+    const { svc, txCalls } = buildHarness();
+    await svc.createBooking(validDto());
+    expect(txCalls.bookingOrderCreate.mock.calls[0][0].data.productPriceId).toBe(
+      "pp_001",
     );
   });
 
-  it("rejects when product price currency != exchange rate target currency", async () => {
-    const { svc } = buildHarness({
-      exchangeRate: { ...ACTIVE_EXCHANGE_RATE, toCurrency: "USD" },
+  it("chooses the rate server-side and ignores the client's exchangeRateId", async () => {
+    const { svc, exchangeRateService, txCalls } = buildHarness();
+    const dto = validDto();
+    dto.payment.exchangeRateId = 999;
+    const result = await svc.createBooking(dto);
+
+    expect(exchangeRateService.findLatest).toHaveBeenCalledWith({
+      fromCurrency: "USDC",
+      toCurrency: "IDR",
     });
-    await expect(svc.createBooking(validDto())).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    const stored = txCalls.bookingOrderCreate.mock.calls[0][0].data;
+    expect((stored.exchangeRate as { id: number }).id).toBe(42);
+    expect(result.payment.exchangeRate.id).toBe(42);
+  });
+
+  it("accepts a booking without exchangeRateId (field is optional)", async () => {
+    const { svc } = buildHarness();
+    const dto = validDto();
+    delete (dto.payment as { exchangeRateId?: number }).exchangeRateId;
+    await expect(svc.createBooking(dto)).resolves.toBeDefined();
+  });
+
+  it("rounds the token amount UP to the smallest unit", async () => {
+    const { svc } = buildHarness();
+    const result = await svc.createBooking(validDto());
+    // 100000 / 15700 * 10^6 = 6369426.7515...; floor would charge 6369426.
+    expect(result.payment.token.amount).toBe("6369427");
+  });
+
+  it("does not add a unit to an exact amount", async () => {
+    const { svc } = buildHarness({
+      exchangeRate: { ...ACTIVE_EXCHANGE_RATE, rate: 16000 },
+      productVariant: {
+        ...PRODUCT_VARIANT,
+        ProductPrice: [{ ...PRODUCT_VARIANT.ProductPrice[0], sellPrice: "50000" }],
+      },
+    });
+    const result = await svc.createBooking(validDto());
+    expect(result.payment.token.amount).toBe("3125000");
+  });
+
+  it("keeps every digit on an 18-decimal token", async () => {
+    const { svc } = buildHarness({ token: { ...ACTIVE_TOKEN, decimals: 18 } });
+    const result = await svc.createBooking(validDto());
+    // 100000 / 15700 = 6.369426751592356687898089..., rounded up in wei.
+    // The old parseFloat * 10 ** decimals path could not represent this.
+    expect(result.payment.token.amount).toBe("6369426751592356688");
   });
 
   it("propagates customer-info validation errors", async () => {
@@ -275,6 +375,88 @@ describe("BookingService.createBooking", () => {
     await expect(svc.createBooking(validDto())).rejects.toBeInstanceOf(
       BadRequestException,
     );
+  });
+});
+
+describe("BookingService.createBooking with points", () => {
+  const withPoints = () => ({ ...validDto(), usePoints: true });
+  // 100000 IDR at 15700 IDR/USDC: minRemainder = ceil(0.3 x 15700) = 4710.
+
+  it("applies a partial balance and charges tokens for the rest", async () => {
+    const { svc, holds, txCalls } = buildHarness({ balance: 30000n });
+    const result = await svc.createBooking(withPoints(), "user_1");
+
+    expect(result.payment.pointsApplied).toBe("30000");
+    // ceil(70000 x 1e6 / 15700) = 4458599
+    expect(result.payment.token.amount).toBe("4458599");
+    expect(result.product.price.amount).toBe(100000);
+    expect(txCalls.bookingOrderCreate.mock.calls[0][0].data).toMatchObject({
+      pointsApplied: 30000n,
+      pointsHoldStatus: "HELD",
+    });
+    expect(holds.holdInTx).toHaveBeenCalledWith(expect.anything(), {
+      userId: "user_1",
+      bookingId: "booking_001",
+      points: 30000n,
+    });
+    expect(holds.invalidate).toHaveBeenCalledWith("user_1");
+  });
+
+  it("a balance covering the whole price still leaves the minimum in tokens", async () => {
+    const { svc } = buildHarness({ balance: 1_000_000n });
+    const result = await svc.createBooking(withPoints(), "user_1");
+    expect(result.payment.pointsApplied).toBe((100000 - 4710).toString());
+    // The remainder is 4710 IDR -> ceil(4710 x 1e6 / 15700) = 300000 = 0.30 USDC.
+    expect(result.payment.token.amount).toBe("300000");
+  });
+
+  it("a tiny price where nothing applies is a normal booking, not an error", async () => {
+    const { svc, holds, txCalls } = buildHarness({
+      balance: 50000n,
+      productVariant: {
+        ...PRODUCT_VARIANT,
+        ProductPrice: [{ ...PRODUCT_VARIANT.ProductPrice[0], sellPrice: "4000" }],
+      },
+    });
+    const result = await svc.createBooking(withPoints(), "user_1");
+    expect(result.payment.pointsApplied).toBe("0");
+    expect(txCalls.bookingOrderCreate.mock.calls[0][0].data).toMatchObject({
+      pointsApplied: 0n,
+      pointsHoldStatus: "NONE",
+    });
+    expect(holds.holdInTx).not.toHaveBeenCalled();
+    // 4000 / 15700 USDC, rounded up
+    expect(result.payment.token.amount).toBe("254778");
+  });
+
+  it("keeps full precision on an 18-decimal token", async () => {
+    const { svc } = buildHarness({
+      token: { ...ACTIVE_TOKEN, decimals: 18 },
+      balance: 30000n,
+    });
+    const result = await svc.createBooking(withPoints(), "user_1");
+    // 70000e18 / 15700 = 4458598726114649681.528... -> 4458598726114649682
+    expect(result.payment.token.amount).toBe("4458598726114649682");
+  });
+
+  it("zero balance, or usePoints off, behaves exactly as before", async () => {
+    const off = buildHarness({ balance: 99999n });
+    const a = await off.svc.createBooking(validDto(), "user_1");
+    expect(a.payment.pointsApplied).toBe("0");
+    expect(a.payment.token.amount).toBe("6369427");
+    expect(off.holds.balanceOf).not.toHaveBeenCalled();
+    expect(off.holds.holdInTx).not.toHaveBeenCalled();
+
+    const empty = buildHarness({ balance: 0n });
+    const b = await empty.svc.createBooking(withPoints(), "user_1");
+    expect(b.payment.token.amount).toBe("6369427");
+  });
+
+  it("a guard that loses a balance race fails the booking with a conflict", async () => {
+    const { svc } = buildHarness({ balance: 30000n, holdConflict: true });
+    await expect(
+      svc.createBooking(withPoints(), "user_1"),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 });
 
@@ -292,6 +474,15 @@ describe("BookingService.expireBookings", () => {
     });
     await svc.expireBookings();
     expect(bookingCache.invalidateBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("never expires a booking that already has a purchase (paid, awaiting confirmations)", async () => {
+    const { svc, prisma } = buildHarness();
+    await svc.expireBookings();
+    const where = (prisma.bookingOrder.updateMany as jest.Mock).mock.calls[0][0]
+      .where;
+    expect(where.status).toBe(BookingStatus.PENDING);
+    expect(where.purchase).toBeNull();
   });
 });
 
@@ -422,20 +613,38 @@ describe("BookingService.cancelBooking", () => {
     );
   });
 
-  it("cancels and invalidates cache", async () => {
-    const { svc, prisma, bookingCache } = buildHarness({
-      bookingFindUnique: {
-        id: "b1",
-        walletAddress: owner.walletAddress,
-        status: BookingStatus.PENDING,
-      },
+  const pendingBooking = {
+    id: "b1",
+    walletAddress: owner.walletAddress,
+    status: BookingStatus.PENDING,
+    purchase: null,
+  };
+
+  it("cancels, releases any held points and invalidates cache", async () => {
+    const { svc, prisma, bookingCache, holds } = buildHarness({
+      bookingFindUnique: pendingBooking,
     });
     await svc.cancelBooking("b1", owner);
-    expect(prisma.bookingOrder.update).toHaveBeenCalledWith({
-      where: { id: "b1" },
+    expect(prisma.bookingOrder.updateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: BookingStatus.PENDING, purchase: null },
       data: { status: BookingStatus.CANCELLED },
     });
+    expect(holds.release).toHaveBeenCalledWith("b1", "booking cancelled");
     expect(bookingCache.invalidateBooking).toHaveBeenCalled();
+  });
+
+  it("refuses a booking that already has a purchase, and releases nothing", async () => {
+    const { svc, prisma, holds } = buildHarness({
+      bookingFindUnique: { ...pendingBooking, purchase: { id: "pur_1" } },
+    });
+    // The guarded update matches no row because a purchase exists.
+    (prisma.bookingOrder.updateMany as jest.Mock).mockResolvedValueOnce({
+      count: 0,
+    });
+    await expect(svc.cancelBooking("b1", owner)).rejects.toThrow(
+      /payment in progress/,
+    );
+    expect(holds.release).not.toHaveBeenCalled();
   });
 });
 

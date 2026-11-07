@@ -42,6 +42,7 @@ export class ExchangeRateController {
   constructor(private readonly exchangeRateService: ExchangeRateService) {}
 
   @Post()
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @ApiCreateExchangeRate()
   async create(@Body() createDto: CreateExchangeRateDto) {
     return await this.exchangeRateService.create(createDto);

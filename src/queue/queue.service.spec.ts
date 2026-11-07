@@ -34,6 +34,14 @@ describe("QueueService.add* job dispatch", () => {
     expect(args[2].jobId).toBe("purchase-R1");
   });
 
+  it("addPurchaseJob rides the long settlement schedule (a payer who really paid must not be failed by a slow chain)", async () => {
+    const { svc, purchaseQueue } = buildHarness();
+    await svc.addPurchaseJob({ refId: "R1" } as never);
+    const opts = (purchaseQueue.add as jest.Mock).mock.calls[0][2];
+    expect(opts.attempts).toBe(150);
+    expect(opts.backoff).toEqual({ type: "custom" });
+  });
+
   it("addBlockchainVerificationJob uses jobId=`blockchain-<refId>`", async () => {
     const { svc, blockchainQueue } = buildHarness();
     await svc.addBlockchainVerificationJob({ refId: "R2" } as never);

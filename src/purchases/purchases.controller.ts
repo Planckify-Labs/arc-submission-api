@@ -68,23 +68,8 @@ export class PurchasesController {
       );
     }
 
-    this.logger.log("=== PURCHASE CREATION REQUEST ===");
-    this.logger.log(
-      "Received createPurchaseDto:",
-      JSON.stringify(createPurchaseDto, null, 2),
-    );
-    this.logger.log(
-      "Request headers:",
-      JSON.stringify(res.req.headers, null, 2),
-    );
-    this.logger.log("Request method:", res.req.method);
-    this.logger.log("Request URL:", res.req.url);
-    this.logger.log(
-      "Request IP:",
-      res.req.ip || res.req.connection.remoteAddress,
-    );
-    this.logger.log("=====================================");
-
+    // Never log the request headers or the whole DTO here: the headers carry
+    // the caller's bearer token.
     const { refId } = createPurchaseDto;
 
     try {

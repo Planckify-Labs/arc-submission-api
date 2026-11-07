@@ -7,6 +7,7 @@ import {
   IsNumber,
   IsOptional,
   IsArray,
+  IsBoolean,
 } from "class-validator";
 import { Type } from "class-transformer";
 
@@ -39,13 +40,16 @@ export class PaymentDetailsDto {
   blockchainId: string;
 
   @ApiProperty({
-    description: "ID of the exchange rate to use for this booking",
+    description:
+      "Deprecated, ignored. The server picks the latest active rate for the token and returns its id in payment.exchangeRate.id; pass that id to the contract.",
     example: 1,
+    required: false,
+    deprecated: true,
   })
+  @IsOptional()
   @IsNumber()
-  @IsNotEmpty()
   @Type(() => Number)
-  exchangeRateId: number;
+  exchangeRateId?: number;
 }
 
 export class CreateBookingDto {
@@ -99,6 +103,15 @@ export class CreateBookingDto {
   })
   @IsOptional()
   customerInfo?: CustomerInfo;
+
+  @ApiProperty({
+    description:
+      "Pay part of the price with points. The server decides how many (see payment.pointsApplied in the response); nothing applicable is a normal token booking.",
+    required: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  usePoints?: boolean;
 }
 
 export class ExecuteBookingDto {
@@ -221,6 +234,14 @@ export class TokenDetailsDto {
 
 export class ExchangeRateDetailsDto {
   @ApiProperty({
+    description:
+      "ID of the locked exchange rate. Pass it to the contract as exchangeRateId; verification compares it on-chain.",
+    example: 42,
+  })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({
     description: "Exchange rate value",
     example: 15700,
   })
@@ -236,6 +257,13 @@ export class ExchangeRateDetailsDto {
 }
 
 export class PaymentResponseDto {
+  @ApiProperty({
+    description: "Points taken from the balance, as a string (\"0\" when none)",
+    example: "30000",
+  })
+  @IsString()
+  pointsApplied: string;
+
   @ApiProperty({
     description: "Token details",
     type: TokenDetailsDto,

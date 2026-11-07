@@ -576,9 +576,12 @@ export class TransactionsService {
             },
           },
         },
+        bookingOrder: { select: { pointsApplied: true } },
       },
     });
-    const purchaseByTxId = new Map(purchases.map((p) => [p.transactionId, p]));
+    const purchaseByTxId = new Map(
+      purchases.map((p) => [p.transactionId, withPointsApplied(p)]),
+    );
 
     return transactions.map((t) => ({
       ...t,
@@ -707,9 +710,12 @@ export class TransactionsService {
             },
           },
         },
+        bookingOrder: { select: { pointsApplied: true } },
       },
     });
-    const purchaseByTxId = new Map(purchases.map((p) => [p.transactionId, p]));
+    const purchaseByTxId = new Map(
+      purchases.map((p) => [p.transactionId, withPointsApplied(p)]),
+    );
 
     const items = transactions.map((t) => ({
       ...t,
@@ -718,4 +724,15 @@ export class TransactionsService {
 
     return { items, total };
   }
+}
+
+/**
+ * Flattens `bookingOrder.pointsApplied` onto the purchase as a string, so the
+ * app can show "1.85 USDC + 30,000 points" without the booking row.
+ */
+function withPointsApplied<
+  T extends { bookingOrder: { pointsApplied: bigint } | null },
+>(p: T) {
+  const { bookingOrder, ...rest } = p;
+  return { ...rest, pointsApplied: (bookingOrder?.pointsApplied ?? 0n).toString() };
 }

@@ -91,6 +91,10 @@ services:
       FLIP_API_BASE: ${FLIP_API_BASE}
       # Onchain settlement
       ONCHAIN_MIN_CONFIRMATIONS: ${ONCHAIN_MIN_CONFIRMATIONS}
+      # What mobile offers for product checkout (GET /app-config): TOKEN (pay
+      # on-chain) or POINTS. An empty value reads as unset, so no `:-` default:
+      # the code owns it (TOKEN).
+      PRODUCT_PAYMENT_MODE: ${PRODUCT_PAYMENT_MODE}
       QUOTE_TTL_DIRECT_ARC_SECONDS: ${QUOTE_TTL_DIRECT_ARC_SECONDS:-900}
       QUOTE_SIGNATURE_DOMAIN_NAME: ${QUOTE_SIGNATURE_DOMAIN_NAME:-TakumiPay}
       QUOTE_SIGNATURE_DOMAIN_VERSION: ${QUOTE_SIGNATURE_DOMAIN_VERSION:-1}

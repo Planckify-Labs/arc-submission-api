@@ -11,6 +11,8 @@ const STALE_CHECK_MS = 30 * 60 * 1000;
 /** Don't hammer the vendor about orders from before the fulfilment leg existed. */
 const LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH = 100;
+/** Leaves an in-flight settle alone; it credits within moments of the flip. */
+const STRANDED_REFUND_AFTER_MS = 10 * 60 * 1000;
 
 /**
  * Safety net under the delayed-job chain: Valkey restarts, a deploy
@@ -107,5 +109,55 @@ export class FulfilmentSweeperService {
       `[fulfilment-sweeper] checked ${checked}/${targets.length} stale orders`,
     );
     return checked;
+  }
+
+  /**
+   * A customer who paid must never sit at FAILED without their refund. If the
+   * credit failed after the status flip, nothing else revisits the order.
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES, { name: "fulfilment-stranded-refunds" })
+  async sweepStrandedRefunds(): Promise<number> {
+    const where = {
+      fulfilmentStatus: FulfilmentStatus.FAILED,
+      refund: null,
+      updatedAt: { lt: new Date(Date.now() - STRANDED_REFUND_AFTER_MS) },
+      createdAt: { gte: new Date(Date.now() - LOOKBACK_MS) },
+    };
+    const [purchases, redemptions] = await Promise.all([
+      this.prisma.purchase.findMany({
+        where,
+        select: { id: true },
+        orderBy: { updatedAt: "asc" },
+        take: BATCH,
+      }),
+      this.prisma.pointRedemption.findMany({
+        where,
+        select: { id: true },
+        orderBy: { updatedAt: "asc" },
+        take: BATCH,
+      }),
+    ]);
+    const targets: Array<{ kind: FulfilmentKind; id: string }> = [
+      ...purchases.map((p) => ({ kind: "purchase" as const, id: p.id })),
+      ...redemptions.map((r) => ({ kind: "redemption" as const, id: r.id })),
+    ];
+
+    let retried = 0;
+    for (const t of targets) {
+      try {
+        await this.fulfilment.finishStrandedRefund(t.kind, t.id);
+        retried++;
+      } catch (err) {
+        this.logger.error(
+          `[fulfilment-sweeper] stranded refund ${t.kind} ${t.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (targets.length > 0) {
+      this.logger.warn(
+        `[fulfilment-sweeper] retried ${retried}/${targets.length} stranded refunds`,
+      );
+    }
+    return retried;
   }
 }

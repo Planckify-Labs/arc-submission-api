@@ -778,10 +778,12 @@ export class ProductsService {
       where: { id },
       include: {
         product: true,
+        // Newest active first: that is the only row `POST /bookings` accepts.
         ProductPrice: {
           include: {
             vendor: true,
           },
+          orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
         },
       },
     });

@@ -1346,19 +1346,18 @@ async function main() {
         isActive: true,
       },
     }),
-    // takumi_pay on Arc mainnet — TakumiPay 2.1.0 behind a UUPS proxy, see
-    // ../contract/evm/deployments/5042.json (deployed 2026-10-01). Native USDC
-    // is aliased to its 6-decimal ERC-20 view and is the only allowlisted
-    // token, with a 1000 USDC sweep cap and a 24h withdrawal delay. The
-    // address is the SAME as Arc testnet's / Monad testnet's: same deployer key
-    // at the same nonce on a fresh chain, a genuine CREATE match. Converges
+    // takumi_pay on Arc mainnet — TakumiPay behind a UUPS proxy, see
+    // ../contract/evm/deployments/5042.json. Native USDC is aliased to its
+    // 6-decimal ERC-20 view and is the only allowlisted token. This is the
+    // production redeploy: the 0x9EEC… proxy it supersedes used the public
+    // signer key from .env.example and must not take payments. Converges
     // `address` on re-seed, same as the other takumi_pay rows.
     prisma.smartContract.upsert({
       where: { id: "smart-contract-payment-arc-mainnet" },
       update: {
         name: "takumi_pay",
         type: "payment",
-        address: "0x9EEC5aD4FC092fD468A8114007e541238F4Ba5ee",
+        address: "0xF44Af1f2b422D66D60aAE5ceFCcbCBF299D01aBF",
         isActive: true,
       },
       create: {
@@ -1366,7 +1365,7 @@ async function main() {
         name: "takumi_pay",
         type: "payment",
         blockchainId: evmChain(5042).id, // Arc mainnet
-        address: "0x9EEC5aD4FC092fD468A8114007e541238F4Ba5ee",
+        address: "0xF44Af1f2b422D66D60aAE5ceFCcbCBF299D01aBF",
         isActive: true,
       },
     }),
@@ -3616,7 +3615,7 @@ async function main() {
     {
       fromCurrency: "USDT",
       toCurrency: "IDR",
-      rate: 15700,
+      rate: 17690,
       region: "ID",
       markup: 1.5,
     },
@@ -3635,14 +3634,14 @@ async function main() {
       markup: 0,
     },
     // UMKM USDC → IDR payout (spec §6.6 FX prerequisites, task 26).
-    // Rate ≈ mid-market early-2026 (USDC ≈ USD, USD/IDR ~16,200-16,300).
-    // `markup: 1.5` absorbs drift per §12 Q10 — no live FX cron in v1,
-    // ops re-runs `pnpm prisma db seed` to tune. TODO: wire a scheduled
-    // refresh (Wise / OpenExchangeRates / Chainlink) post-v1.
+    // USD-pegged, so the same USD/IDR spot as the AUSD row below.
+    // `markup: 1.5` absorbs drift per §12 Q10 — no live FX cron in v1. The
+    // seed only fills gaps, so tune a live rate from the dashboard. TODO: wire
+    // a scheduled refresh (Wise / OpenExchangeRates / Chainlink) post-v1.
     {
       fromCurrency: "USDC",
       toCurrency: "IDR",
-      rate: 16234.5,
+      rate: 17690,
       region: "ID",
       markup: 1.5,
     },
@@ -3651,8 +3650,7 @@ async function main() {
     // uses the live USD/IDR spot rate, not a separate crypto quote — same
     // convention as the USDC row above. Rate is the mid-market USD/IDR spot
     // fetched 2026-09-16 (open.er-api.com: 17,688.13; frankfurter.app: 17,697 —
-    // averaged and rounded). `markup: 1.5` matches the USDC row; re-run the
-    // seed to refresh once a live FX cron exists (same TODO as above).
+    // averaged and rounded). `markup: 1.5` matches the USDC row.
     {
       fromCurrency: "AUSD",
       toCurrency: "IDR",
@@ -3673,6 +3671,9 @@ async function main() {
     },
   ];
 
+  // Fills gaps only. Any active rate for the pair wins, whatever its source,
+  // so a re-seed can never override a rate set from the dashboard: the newest
+  // row is the one that prices payments.
   await Promise.all(
     seedExchangeRates.map(async (r) => {
       const existing = await prisma.exchangeRate.findFirst({
@@ -3680,7 +3681,6 @@ async function main() {
           fromCurrency: r.fromCurrency,
           toCurrency: r.toCurrency,
           region: r.region,
-          sourceProviderId: exchangeSource.id,
           isActive: true,
         },
       });

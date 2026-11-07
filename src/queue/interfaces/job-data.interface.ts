@@ -8,6 +8,14 @@ export interface TPurchaseJobData {
   userId: string;
   tokenId: string;
   purchaseId: string;
+  /**
+   * Written by the worker via `job.updateData`, never by the producer. The
+   * post-payment stage has its own small retry budget, separate from the
+   * job's long verification budget, so its count lives here.
+   */
+  vendorAttempts?: number;
+  /** Whether `createOrder` was reached on an earlier attempt. */
+  vendorOrderAttempted?: boolean;
 }
 
 export interface TBlockchainVerificationJobData {

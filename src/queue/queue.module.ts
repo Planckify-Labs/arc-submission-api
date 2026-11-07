@@ -1,3 +1,4 @@
+import { PointsHoldModule } from "../points-hold/points-hold.module";
 import { Module } from "@nestjs/common";
 import { BullModule } from "@nestjs/bullmq";
 import { ConfigModule, ConfigService } from "@nestjs/config";
@@ -78,6 +79,7 @@ import { FulfilmentModule } from "../fulfilment/fulfilment.module";
     ValkeyModule,
     PushModule,
     FulfilmentModule,
+    PointsHoldModule,
   ],
   providers: [PurchaseProcessor, QueueService],
   exports: [QueueService],

@@ -9,6 +9,7 @@ import { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { RateLimitCacheService } from '../../valkey/services/rate-limit-cache.service';
 import { getBookingConfig } from '../../config/app.config';
+import { assertCallerOwnsWallet } from '../wallet-ownership';
 
 /**
  * Limits bookings per wallet address using Valkey atomic INCR.
@@ -35,6 +36,13 @@ export class BookingRateLimitGuard implements CanActivate {
     if (!walletAddress) {
       throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
     }
+
+    // Before counting: otherwise any signed-in user could burn a victim's
+    // booking quota by posting the victim's address.
+    assertCallerOwnsWallet(
+      (request as Request & { user?: { walletAddress?: string | null } }).user,
+      walletAddress,
+    );
 
     const { allowed } = await this.rateLimitCacheService.checkRateLimit(
       `booking:${walletAddress}`,

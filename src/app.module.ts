@@ -18,6 +18,7 @@ import { BlockchainsModule } from "./blockchains/blockchains.module";
 import { BookingModule } from "./booking/booking.module";
 import { BridgeModule } from "./bridge/bridge.module";
 import { OnrampModule } from "./onramp/onramp.module";
+import { AppConfigModule } from "./app-config/app-config.module";
 import { DappsModule } from "./dapps/dapps.module";
 import { SwapModule } from "./swap/swap.module";
 import { ExchangeRateModule } from "./exchange-rate/exchange-rate.module";
@@ -97,6 +98,7 @@ import { X402Module } from "./x402/x402.module";
     PortfolioModule,
     BridgeModule,
     OnrampModule,
+    AppConfigModule,
     SwapModule,
     PushModule,
     WalletConnectPushModule,
