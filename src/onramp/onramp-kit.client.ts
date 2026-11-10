@@ -114,6 +114,23 @@ export function sessionIdOf(session: {
   }
 }
 
+/** Claim NAMES of the session token (never values), for diagnostics only. */
+function tokenClaimNames(token: unknown): string[] {
+  if (typeof token !== "string") return [];
+  const payload = token.split(".")[1];
+  if (!payload) return [];
+  try {
+    const claims: unknown = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    );
+    return claims !== null && typeof claims === "object"
+      ? Object.keys(claims)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 @Injectable()
 export class OnrampKitClient {
   private readonly logger = new Logger(OnrampKitClient.name);
@@ -177,7 +194,7 @@ export class OnrampKitClient {
         typeof session.expiresAt !== "string" && "expiresAt",
       ].filter(Boolean);
       this.logger.warn(
-        `[onramp] createSession returned an incomplete session, missing=${missing.join(",")}`,
+        `[onramp] createSession returned an incomplete session, missing=${missing.join(",")} sessionKeys=${Object.keys(session).join(",")} tokenClaims=${tokenClaimNames(session.sessionToken).join(",")}`,
       );
       throw new OnrampMintError("upstream", null);
     }
