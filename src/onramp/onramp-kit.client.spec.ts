@@ -75,13 +75,21 @@ describe("OnrampKitClient.mintSession", () => {
     });
   });
 
-  it("still refuses a session with no id anywhere", async () => {
+  it("mints with a local ledger id when the API gives no session id anywhere", async () => {
     createSession.mockResolvedValue({
       traceId: "trace-1",
-      sessionToken: tokenWith({}),
+      sessionToken: "opaque-token",
       expiresAt: "2026-10-10T12:00:00.000Z",
-      widgetUrl: "https://onramp-sandbox.arc.io/?sessionToken=x",
+      widgetUrl: "https://onramp.arc.io/?sessionToken=opaque-token",
     });
+
+    const out = await new OnrampKitClient().mintSession(CONFIG, INPUT);
+    expect(out.sessionId).toMatch(/^local_[0-9a-f-]{36}$/);
+    expect(out.sessionToken).toBe("opaque-token");
+  });
+
+  it("still refuses a session with no token or widget URL", async () => {
+    createSession.mockResolvedValue({ traceId: "trace-1" });
 
     const err = await new OnrampKitClient()
       .mintSession(CONFIG, INPUT)

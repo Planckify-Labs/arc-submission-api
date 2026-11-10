@@ -18,6 +18,7 @@ import {
   type MintedOnrampSession,
   createAppServerKit,
 } from "@circle-fin/app-kit/server";
+import { randomUUID } from "node:crypto";
 import { Injectable, Logger } from "@nestjs/common";
 import type { OnrampConfig } from "./onramp.config";
 
@@ -114,23 +115,6 @@ export function sessionIdOf(session: {
   }
 }
 
-/** Claim NAMES of the session token (never values), for diagnostics only. */
-function tokenClaimNames(token: unknown): string[] {
-  if (typeof token !== "string") return [];
-  const payload = token.split(".")[1];
-  if (!payload) return [];
-  try {
-    const claims: unknown = JSON.parse(
-      Buffer.from(payload, "base64url").toString("utf8"),
-    );
-    return claims !== null && typeof claims === "object"
-      ? Object.keys(claims)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
 @Injectable()
 export class OnrampKitClient {
   private readonly logger = new Logger(OnrampKitClient.name);
@@ -179,24 +163,33 @@ export class OnrampKitClient {
       throw mapped;
     }
 
-    const sessionId = sessionIdOf(session);
+    // Circle's live API returns an opaque token and no session id (seen
+    // 2026-11-10), so there is nothing to match its webhook against. The
+    // widget does not need the id and the funds land on-chain regardless,
+    // so mint with a local ledger id instead of failing the checkout. A
+    // webhook for such an order finds no row and is ignored.
+    const providerSessionId = sessionIdOf(session);
+    const sessionId = providerSessionId ?? `local_${randomUUID()}`;
     if (
-      sessionId === null ||
       typeof session.sessionToken !== "string" ||
       typeof session.widgetUrl !== "string" ||
       typeof session.expiresAt !== "string"
     ) {
       // Field names only, so the log says which piece the API left out.
       const missing = [
-        sessionId === null && "sessionId",
         typeof session.sessionToken !== "string" && "sessionToken",
         typeof session.widgetUrl !== "string" && "widgetUrl",
         typeof session.expiresAt !== "string" && "expiresAt",
       ].filter(Boolean);
       this.logger.warn(
-        `[onramp] createSession returned an incomplete session, missing=${missing.join(",")} sessionKeys=${Object.keys(session).join(",")} tokenClaims=${tokenClaimNames(session.sessionToken).join(",")}`,
+        `[onramp] createSession returned an incomplete session, missing=${missing.join(",")}`,
       );
       throw new OnrampMintError("upstream", null);
+    }
+    if (providerSessionId === null) {
+      this.logger.warn(
+        "[onramp] createSession returned no session id, using a local ledger id",
+      );
     }
 
     return {
