@@ -170,6 +170,9 @@ export class AsyncClaimWatcherProcessor extends WorkerHost {
                 positionId: position.id,
                 protocolSlug: position.protocolSlug,
                 chainId: position.chainId,
+                // Replayed into the agent on tap (mobile `tapRoutes.ts`),
+                // which has the claim tool; the write still needs approval.
+                prompt: `Claim my settled ${position.assetSymbol} ${noun} on ${position.protocolSlug}.`,
               },
               channelId: "strategies",
             });

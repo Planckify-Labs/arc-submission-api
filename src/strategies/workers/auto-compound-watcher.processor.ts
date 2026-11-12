@@ -93,6 +93,9 @@ export class AutoCompoundWatcherProcessor extends WorkerHost {
           positionId: position.id,
           protocolSlug: position.protocolSlug,
           chainId: position.chainId,
+          // Replayed into the agent on tap (mobile `tapRoutes.ts`), which
+          // has the compound tool; the write still needs user approval.
+          prompt: `Compound the rewards on my ${position.assetSymbol} position on ${position.protocolSlug}.`,
         },
         channelId: "strategies",
       });

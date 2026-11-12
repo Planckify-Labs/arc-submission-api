@@ -556,6 +556,60 @@ describe("PushService.attemptDelivery — outbox lifecycle", () => {
     );
   });
 
+  it("stamps the inbox id and target wallet on the delivered payload, producer keys first", async () => {
+    const sent: Array<{ data?: Record<string, unknown> }> = [];
+    expoBehaviour.send = async (chunk) => {
+      sent.push(...(chunk as Array<{ data?: Record<string, unknown> }>));
+      return chunk.map((_, i) => ({ status: "ok", id: `ticket-${i}` }));
+    };
+    const { service } = buildHarness({
+      liveDevices: [a],
+      logs: [
+        stagedLog({
+          pendingDeviceIds: [a.id],
+          walletAddress: "0xRecipient",
+          data: { type: "transfer", transactionId: "tx_1" },
+        }),
+      ],
+    });
+
+    await service.attemptDelivery("log_1", { final: false });
+
+    expect(sent[0]?.data).toEqual({
+      notificationId: "log_1",
+      targetWallet: "0xRecipient",
+      type: "transfer",
+      transactionId: "tx_1",
+    });
+  });
+
+  it("a user-addressed push names the user's wallet as the target", async () => {
+    const sent: Array<{ data?: Record<string, unknown> }> = [];
+    expoBehaviour.send = async (chunk) => {
+      sent.push(...(chunk as Array<{ data?: Record<string, unknown> }>));
+      return chunk.map((_, i) => ({ status: "ok", id: `ticket-${i}` }));
+    };
+    const { service } = buildHarness({
+      liveDevices: [a],
+      user: { walletAddress: "GUSERWALLET" },
+      logs: [
+        stagedLog({
+          pendingDeviceIds: [a.id],
+          walletAddress: null,
+          userId: "user_1",
+          data: { type: "point_deposit" },
+        }),
+      ],
+    });
+
+    await service.attemptDelivery("log_1", { final: false });
+
+    expect(sent[0]?.data).toMatchObject({
+      notificationId: "log_1",
+      targetWallet: "GUSERWALLET",
+    });
+  });
+
   it("a transport failure keeps every device pending and asks for a retry — nothing is lost", async () => {
     expoBehaviour.send = async () => {
       throw new Error("ECONNRESET");

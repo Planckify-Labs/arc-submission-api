@@ -1329,6 +1329,42 @@ export class PushService {
    * job, a sweeper re-enqueue and the inline fallback can all race for the
    * same row and exactly one of them sends.
    */
+  /**
+   * The payload as the device receives it: the row's own `data` plus two
+   * routing fields the tap handler needs (mobile `tapRoutes.ts`):
+   *   - `notificationId`: the inbox row, so a tap marks it read;
+   *   - `targetWallet`: the wallet the push is about. Every wallet is its
+   *     own user with its own JWT, so a device holding several wallets has
+   *     to switch to this one before it can read the detail.
+   * The producer's own keys win on a clash.
+   */
+  private async deliveredData(log: {
+    id: string;
+    data: Prisma.JsonValue | null;
+    walletAddress: string | null;
+    userId: string | null;
+  }): Promise<Record<string, unknown>> {
+    const own =
+      log.data && typeof log.data === "object" && !Array.isArray(log.data)
+        ? (log.data as Record<string, unknown>)
+        : {};
+    let targetWallet = log.walletAddress;
+    if (!targetWallet && log.userId) {
+      const owner = await this.prisma.user
+        .findUnique({
+          where: { id: log.userId },
+          select: { walletAddress: true },
+        })
+        .catch(() => null);
+      targetWallet = owner?.walletAddress ?? null;
+    }
+    return {
+      notificationId: log.id,
+      ...(targetWallet ? { targetWallet } : {}),
+      ...own,
+    };
+  }
+
   async attemptDelivery(
     notificationLogId: string,
     opts: { final: boolean },
@@ -1399,12 +1435,13 @@ export class PushService {
         return "done";
       }
 
+      const data = await this.deliveredData(log);
       const messages: ExpoPushMessage[] = devices.map((d) => ({
         to: d.token,
         sound: "default",
         title: log.title,
         body: log.body,
-        data: (log.data ?? {}) as Record<string, unknown>,
+        data,
         channelId: log.channelId ?? undefined,
         priority: "high",
         ...(log.imageUrl ? { richContent: { image: log.imageUrl } } : {}),
