@@ -208,17 +208,17 @@ export function fulfilmentPushCopy(
     case "reconcile":
       return {
         title: "We're checking your order",
-        body: `${name} needs a manual check. Your money is safe — we'll update you within 24 hours.`,
+        body: `${name} needs a manual check. Your money is safe, and we'll update you within 24 hours.`,
       };
     case "refunded":
       return {
         title: pts ? `Refunded: ${pts} points` : "Refunded",
-        body: `We couldn't deliver ${name}. ${pts ? `${pts} points are` : "Your points are"} back in your balance — you can retry with points anytime.`,
+        body: `We couldn't deliver ${name}. ${pts ? `${pts} points are` : "Your points are"} back in your balance. You can retry with points anytime.`,
       };
     case "refund_pending":
       return {
         title: "Refund in review",
-        body: `We couldn't deliver ${name}. Your refund is being reviewed — usually within 24 hours.`,
+        body: `We couldn't deliver ${name}. Your refund is being reviewed, usually within 24 hours.`,
       };
     case "refund_reversed":
       return {

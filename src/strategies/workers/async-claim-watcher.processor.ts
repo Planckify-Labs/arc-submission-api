@@ -164,7 +164,7 @@ export class AsyncClaimWatcherProcessor extends WorkerHost {
             await this.pushService.sendToUser({
               userId: position.userStrategy.userId,
               title: "Ready to claim",
-              body: `Your ${position.assetSymbol} ${noun} on ${position.protocolSlug} has settled — tap to claim it.`,
+              body: `Your ${position.assetSymbol} ${noun} on ${position.protocolSlug} has settled. Tap to claim it.`,
               data: {
                 kind: "async_claimable",
                 positionId: position.id,
